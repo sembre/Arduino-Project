@@ -1,0 +1,4 @@
+[wokwi]
+version=1
+firmware='Mega2560-prod-firmware-2011-06-29.hex'
+elf='Mega2560-prod-firmware-2011-06-29.hex'
