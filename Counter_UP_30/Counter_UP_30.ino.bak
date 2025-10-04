@@ -1,0 +1,106 @@
+#include <TM1637Display.h>
+
+#define CLK 2
+#define DIO 3
+TM1637Display display(CLK, DIO);
+
+#define BUTTON_UP 4
+#define BUTTON_DOWN 5
+#define RELAY_PIN 6
+
+#define TRIG_PIN 7
+#define ECHO_PIN 8
+
+int countdownTime = 30;
+int initialTime = 30;
+unsigned long previousMillis = 0;
+bool countingDown = false;
+bool started = false;
+
+void setup() {
+  pinMode(BUTTON_UP, INPUT_PULLUP);
+  pinMode(BUTTON_DOWN, INPUT_PULLUP);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  digitalWrite(RELAY_PIN, HIGH); // Relay off awal
+
+  display.setBrightness(5);
+  display.showNumberDec(countdownTime, false);
+
+  Serial.begin(9600);
+  Serial.println("Sistem siap. Menunggu objek...");
+}
+
+void loop() {
+  // Tombol tambah waktu
+  if (digitalRead(BUTTON_UP) == LOW) {
+    delay(200);
+    countdownTime++;
+    if (countdownTime > 9999) countdownTime = 9999;
+    initialTime = countdownTime;
+    display.showNumberDec(countdownTime, false);
+    countingDown = false;
+    started = false;
+  }
+
+  // Tombol kurang waktu
+  if (digitalRead(BUTTON_DOWN) == LOW) {
+    delay(200);
+    if (countdownTime > 0) countdownTime--;
+    initialTime = countdownTime;
+    display.showNumberDec(countdownTime, false);
+    countingDown = false;
+    started = false;
+  }
+
+  // Baca jarak dari sensor ultrasonik
+  long duration;
+  float distanceCm;
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  duration = pulseIn(ECHO_PIN, HIGH, 30000); // timeout 30ms
+  distanceCm = duration * 0.034 / 2;
+
+  // Tampilkan jarak ke Serial Monitor
+  Serial.print("Jarak: ");
+  Serial.print(distanceCm);
+  Serial.println(" cm");
+
+  // Jika objek dekat (< 30 cm) dan belum mulai
+  if (distanceCm > 0 && distanceCm < 10 && !started && countdownTime > 0) {
+    started = true;
+    countingDown = true;
+    previousMillis = millis();
+    Serial.println("Objek terdeteksi! Memulai countdown...");
+  }
+
+  // Countdown aktif
+  if (countingDown && millis() - previousMillis >= 1000 && countdownTime > 0) {
+    previousMillis = millis();
+    countdownTime--;
+
+    digitalWrite(RELAY_PIN, LOW);
+    delay(100);
+    digitalWrite(RELAY_PIN, HIGH);
+
+    display.showNumberDec(countdownTime, false);
+  }
+
+  // Saat countdown selesai
+  if (countdownTime == 0 && countingDown) {
+    countingDown = false;
+    started = false;
+    countdownTime = initialTime;
+    display.showNumberDec(countdownTime, false);
+    Serial.println("Countdown selesai. Reset ke nilai awal.");
+  }
+
+  delay(100); // Delay kecil untuk kestabilan
+}
