@@ -613,7 +613,7 @@ void updateIdleDisplay()
 void setup()
 {
   // Aktifkan Serial untuk menampilkan jumlah boot
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   // Setup relay dengan proteksi ekstra untuk AC load
   pinMode(relayPin, OUTPUT);
