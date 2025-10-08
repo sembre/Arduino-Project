@@ -62,17 +62,6 @@ TM1637Display tm1637(CLK_PIN, DIO_PIN);
 unsigned int bootCount = 0;
 bool deviceLocked = false;
 
-// Debounce configuration
-const unsigned long debounceDelay = 50; // ms, adjust as needed (20-100ms typical)
-
-// Derived number of pins
-const int numPins = sizeof(pins) / sizeof(pins[0]);
-
-// Per-pin debounce state
-bool lastStableState[numPins];           // Last stable (debounced) state
-bool lastReading[numPins];               // Last raw reading
-unsigned long lastDebounceTime[numPins]; // Last time the reading changed
-
 // Custom segments untuk menampilkan "dIE" pada TM1637
 const uint8_t dieSegments[] = {
     0x5E, // d
@@ -153,7 +142,7 @@ void setup()
   tm1637.setBrightness(7); // Set brightness level (0 - 7)
 
   // Inisialisasi Serial Monitor
-  Serial.begin(115200);
+  Serial.begin(9600);
 
   // Baca boot count dari EEPROM
   bootCount = readBootCount();
@@ -179,15 +168,6 @@ void setup()
     pinMode(pins[i], INPUT_PULLUP);
   }
 
-  // Inisialisasi state debounce
-  for (int i = 0; i < numPins; i++)
-  {
-    bool reading = digitalRead(pins[i]);
-    lastReading[i] = reading;
-    lastStableState[i] = reading;
-    lastDebounceTime[i] = millis();
-  }
-
   Serial.println("Device initialized successfully.");
   Serial.println("Pin checker is ready.");
 }
@@ -202,53 +182,24 @@ void loop()
     return;
   }
 
-  unsigned long now = millis();
-
-  // Scan pins with debounce per-pin
-  for (int i = 0; i < numPins; i++)
+  // Cek setiap pin
+  for (int i = 0; i < sizeof(pins) / sizeof(pins[0]); i++)
   {
-    bool reading = digitalRead(pins[i]); // raw reading (HIGH when open due to INPUT_PULLUP)
-
-    // If the reading changed from lastReading, reset the debounce timer
-    if (reading != lastReading[i])
+    if (digitalRead(pins[i]) == LOW)
     {
-      lastDebounceTime[i] = now;
-      lastReading[i] = reading;
-    }
+      // Jika pin terhubung ke GND, tampilkan angka pada TM1637 display
+      int valueToShow = i + 1; // Start numbering from 1
+      tm1637.showNumberDecEx(valueToShow);
 
-    // If the reading has been stable for longer than debounceDelay, take it as the actual state
-    if ((now - lastDebounceTime[i]) >= debounceDelay)
-    {
-      if (lastStableState[i] != reading)
-      {
-        // State changed (debounced)
-        lastStableState[i] = reading;
+      // Tampilkan angka juga di Serial Monitor
+      Serial.print("Pin ");
+      Serial.print(pins[i]);
+      Serial.print(" connected, displaying number: ");
+      Serial.println(valueToShow);
 
-        // We are interested when pin goes LOW (connected to GND)
-        if (reading == LOW)
-        {
-          showPinDetected(i);
-          // After detection, short delay to avoid immediate re-detection of same press
-          delay(200);
-          // Optionally clear display
-          tm1637.clear();
-        }
-      }
+      delay(1000);    // Display for 1 second
+      tm1637.clear(); // Clear the display after showing
+      break;          // Exit loop after detecting the first active pin
     }
   }
-
-  // Tiny sleep to reduce CPU usage
-  delay(5);
-}
-
-// Centralized display + serial logic when a stable pin is detected
-void showPinDetected(int index)
-{
-  int valueToShow = index + 1; // Start numbering from 1
-  tm1637.showNumberDecEx(valueToShow);
-
-  Serial.print("Pin ");
-  Serial.print(pins[index]);
-  Serial.print(" connected (stable), displaying number: ");
-  Serial.println(valueToShow);
 }
