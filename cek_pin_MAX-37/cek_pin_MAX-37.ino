@@ -5,7 +5,7 @@
 #define MAGIC_NUMBER 1234 // Ubah angka ini untuk mereset boot lock
 #define EEPROM_ADDR_MAGIC 0
 #define EEPROM_ADDR_COUNT 2
-#define MAX_BOOT_COUNT 5000
+#define MAX_BOOT_COUNT 3000
 
 // Konfigurasi pin CLK dan DIO pada modul TM1637
 #define CLK_PIN A0
@@ -64,8 +64,9 @@ void setup() {
   }
   
   Serial.print("Boot count: ");
-  Serial.println(bootCount);
-
+  Serial.print(bootCount);
+  Serial.print("/");
+  Serial.print(MAX_BOOT_COUNT);
   // Deklarasi pin sebagai INPUT_PULLUP agar pin terbaca HIGH saat tidak tersambung ke GND
   for (int i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
     pinMode(pins[i], INPUT_PULLUP);
