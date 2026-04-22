@@ -26,13 +26,14 @@ const long MAX_PASS_COUNT = 90000L; // Maksimal pass count (90000 untuk producti
 long passCount = 0L;                // Counter pass yang disimpan di EEPROM
 bool systemLocked = false;
 
-// Variabel untuk pin 13 trigger counting
+// Variabel untuk pin 13 dan pin 3 trigger counting
 bool pin13WasLow = true;                      // Flag untuk deteksi perubahan dari LOW ke HIGH pada pin 13
+bool pin3WasLow = true;                       // Flag untuk deteksi perubahan dari LOW ke HIGH pada pin 3
 const unsigned long PASS_TIMER_INTERVAL = 30; // Interval timer (tidak digunakan lagi)
 
 const int EEPROM_PASS_ADDR = 0;           // Alamat EEPROM untuk pass counter (4 bytes)
 const int EEPROM_MAGIC_ADDR = 8;          // Alamat EEPROM untuk magic key (4 bytes)
-const long MAGIC_KEY = 0x12345678L;       // Magic key untuk deteksi upload ulang 0x12345678L
+const long MAGIC_KEY = 0x12345678L;       // Magic key untuk deteksi upload ulang
 const long RESET_MAGIC_KEY = 0x87654321L; // Magic key khusus untuk reset
 // pins SIDE A , SIDE B
 int endA[10] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31}; // pins end A 15CZ-6Y No 15,... ,
@@ -75,6 +76,7 @@ int frequency;
 int POT = 64;
 int potVal = analogRead(POT);
 const int BUZZER_PIN = 13; // Arduino pin connected to Buzzer's pin
+const int TRIGGER_PIN = 3; // Pin tambahan untuk trigger counting (sama fungsi dengan pin 13)
 
 // Fungsi untuk membaca pass count dari EEPROM (menggunakan EEPROM.get)
 long readPassCountFromEEPROM()
@@ -173,9 +175,10 @@ void setup()
   // CATATAN: Pass counter hanya bisa direset dengan upload ulang kode
   // Tidak ada tombol atau cara lain untuk reset
 
-  // Inisialisasi pin 13 trigger variables
+  // Inisialisasi pin 13 dan pin 3 trigger variables
   pin13WasLow = true;
-  Serial.println("Pin 13 trigger initialized for pass counting");
+  pin3WasLow = true;
+  Serial.println("Pin 13 and Pin 3 trigger initialized for pass counting");
 
   // Cek apakah sistem sudah terkunci
   if (passCount >= MAX_PASS_COUNT)
@@ -213,7 +216,8 @@ void setup()
   pinMode(pinBtn9, INPUT_PULLUP);
   pinMode(pinBtn10, INPUT_PULLUP);
 
-  pinMode(BUZZER_PIN, OUTPUT); // DISAMBUNG DENGAN TRANSISTOR SWITCH KEMUDIAN KE RELAY
+  pinMode(BUZZER_PIN, OUTPUT);  // DISAMBUNG DENGAN TRANSISTOR SWITCH KEMUDIAN KE RELAY
+  pinMode(TRIGGER_PIN, OUTPUT); // PIN 3 sebagai output tambahan untuk trigger counting
   lcd.begin(16, 2);
 
   // Tampilkan pass count di Serial Monitor
@@ -444,41 +448,52 @@ void loop()
       fail = true;
     }
   }
-  // Pass counter logic berdasarkan pin 13 trigger (dari LOW ke HIGH)
+  // Pass counter logic berdasarkan pin 13 dan pin 3 trigger (dari LOW ke HIGH)
   if (fail)
   {
     digitalWrite(13, LOW); // Pin 13 MATI BUZZER MATI
+    digitalWrite(3, LOW);  // Pin 3 MATI
     Serial.println("FAILED");
     lcd.setCursor(0, 1);
     lcd.print(resultS);
     noTone(speakerPin);
 
-    // HANYA set pin13WasLow = true saat FAILED (LOW state)
+    // HANYA set flag = true saat FAILED (LOW state)
     if (!pin13WasLow)
     {
       pin13WasLow = true; // Reset flag - siap untuk counting berikutnya
       Serial.println("PIN 13 NOW LOW - Ready for next HIGH transition");
     }
+    if (!pin3WasLow)
+    {
+      pin3WasLow = true; // Reset flag - siap untuk counting berikutnya
+      Serial.println("PIN 3 NOW LOW - Ready for next HIGH transition");
+    }
   }
   else
   {
     digitalWrite(13, HIGH); // Pin 13 Hidup , BUZZER NYALA
+    digitalWrite(3, HIGH);  // Pin 3 Hidup
     Serial.println("PASSED");
     lcd.print("     PASSED");
     tone(speakerPin, frequency); // using tone function to generate the tone of the frequency given by POT
 
-    // Pin 13 berubah dari LOW ke HIGH - increment pass counter HANYA SEKALI
-    if (pin13WasLow)
+    // Pin 13 atau Pin 3 berubah dari LOW ke HIGH - increment pass counter HANYA SEKALI
+    if (pin13WasLow || pin3WasLow)
     {
       // Ini adalah transisi dari LOW ke HIGH - increment pass counter
       passCount++;
       pin13WasLow = false; // Set flag bahwa pin 13 sekarang HIGH (prevent multiple count)
+      pin3WasLow = false;  // Set flag bahwa pin 3 sekarang HIGH (prevent multiple count)
 
-      Serial.print("PIN 13 LOW->HIGH TRANSITION - Incrementing pass count to: ");
+      Serial.print("PIN 13/PIN 3 LOW->HIGH TRANSITION - Incrementing pass count to: ");
       Serial.println(passCount);
 
       // Simpan ke EEPROM
       writePassCountToEEPROM(passCount);
+
+      // Tunggu EEPROM selesai ditulis sebelum reset
+      delay(100);
 
       // Cek apakah sudah mencapai batas maksimum
       if (passCount >= MAX_PASS_COUNT)
@@ -493,8 +508,8 @@ void loop()
     }
     else
     {
-      // Pin 13 masih HIGH dari loop sebelumnya - tidak increment
-      Serial.println("PIN 13 STILL HIGH - No increment (already counted this cycle)");
+      // Pin 13 atau pin 3 masih HIGH dari loop sebelumnya - tidak increment
+      Serial.println("PIN 13/PIN 3 STILL HIGH - No increment (already counted this cycle)");
     }
   }
 
