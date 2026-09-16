@@ -3,2345 +3,954 @@
  * TWISTING CONTROL MULTI-TIME SYSTEM - 32 MODE PROFESSIONAL EDITION
  * ========================================================================
  *
- * Project: twisting_control_multi_time_32_time
- * Version: 3.1 Professional with Emergency Stop & Relay Safety
- * Date: February 2026
- * Author: AGUS FITRIYANTO
- * Repository: https://github.com/sembre/
- * License: Creative Commons Attribution (CC BY)
- *
- * DESCRIPTION:
- * Advanced 32-mode twisting control system dengan boot counter protection.
- * Sistem ini mengontrol timing untuk 32 mode berbeda (A1-A8, B1-B8, C1-C8, D1-D8)
- * dengan perlindungan keamanan boot counter untuk mencegah penggunaan berlebihan.
- *
- * MAIN FEATURES:
- * • 32 Independent Timer Modes (Groups A, B, C, D dengan 8 sub-modes each)
- * • Boot Counter Protection System (7000 boot limit)
- * • EEPROM Persistent Storage untuk all settings dan counters
- * • LCD 20x4 Display dengan scrolling interface
- * • TM1637 7-segment display untuk time visualization
- * • 4x4 Keypad interface untuk mode selection dan timing input
- * • Switch control dengan debouncing dan EMI protection
- * • Relay output dengan advanced safety control
- * • Emergency Stop (PIN 51) dengan dual-function operation
- * • Constant switch mode untuk continuous operation
- * • System stability monitoring dengan error detection
- * • Industrial-grade relay safety: Immediate OFF, ratelimit only ON
- *
- * ADVANCED CAPABILITIES:
- * • Boot Limit Security: System locks after 7000 boots
- * • EEPROM Data Validation: Magic number validation
- * • EMI Protection: Advanced filtering untuk industrial environments
- * • Switch Debouncing: 10ms advanced filtering
- * • Scrolling Interface: Navigate 32 modes pada 20x4 display
- * • Non-volatile Storage: Settings preserved across power cycles
- * • System Diagnostics: Error counting dan stability monitoring
- * • Emergency Stop Safety: PIN 51 dengan dual-function (lock all, then reset)
- * • Relay Safety: Immediate OFF without ratelimit blocking
- * • Industrial-grade Response: <50ms emergency activation time
- *
- * HARDWARE REQUIREMENTS:
- * • Arduino Mega 2560 (required untuk sufficient I/O pins)
- * • LCD 20x4 I2C display (address 0x27)
- * • TM1637 4-digit 7-segment display
- * • 4x4 Matrix keypad
- * • SPST switch untuk mode control
- * • Relay module untuk actuator control
- * • Industrial power supply (5V/12V)
- *
- * INDUSTRIAL APPLICATIONS:
- * • Cable twisting machines dengan multiple programs
- * • Manufacturing process control dengan timing sequences
- * • Production line automation dengan preset modes
- * • Quality control timing untuk consistent results
- * • Multi-stage process control systems
- * • Equipment protection dengan usage limits
- *
- * SECURITY FEATURES:
- * • Boot Counter: Tracks system usage (max 7000 boots)
- * • Firmware Protection: Re-flash required untuk unlock
- * • EEPROM Validation: Data integrity checking
- * • System Lock: Automatic disable saat limit tercapai
- * • Usage Tracking: Comprehensive boot monitoring
- * • Emergency Stop: PIN 51 safety button dengan debouncing
- * • Relay Safety: Prevents relay stuck ON kondisi
- * • Dual-Function Control: Lock all → Reset to initial state
- *
- * TECHNICAL SPECIFICATIONS:
- * • Timer Resolution: 1 second precision
- * • Mode Capacity: 32 independent timing modes
- * • Boot Limit: 7000 cycles (equipment protection)
- * • Storage: EEPROM non-volatile memory
- * • Display: 20x4 LCD + 4-digit 7-segment
- * • Input: 4x4 keypad + SPST switch + Emergency Stop (PIN 51)
- * • Output: Relay control dengan industrial safety features
- * • Emergency Response Time: <50ms from button press to relay OFF
- * • Relay Safety: Immediate OFF (no ratelimit), 100ms ON ratelimit only
- *
- * MODIFICATION HISTORY:
- * 2025-08-XX: Added boot counter lock feature
- * 2025-10-XX: Enhanced documentation dan security features
- * 2026-02-24: Emergency Stop PIN 51 Implementation
- *   - Added PIN 51 emergency stop button dengan industrial debouncing (50ms)
- *   - Dual-function operation: Press 1 = Lock all functions, Press 2 = Reset to initial
- *   - Force relay OFF immediately pada emergency activation
- *   - Display feedback: "!!!EMERGENCY STOP!!!" message dengan reset instructions
- *   - Serial logging untuk debugging dan monitoring
- *
- * 2026-02-24: Critical Relay Safety Improvements
- *   - Fixed ratelimit logic: Only limit relay ON (100ms), OFF is immediate
- *   - Added safety check in loop: Force relay OFF if !systemRunning
- *   - Improved timer completion: Double-check relay OFF dengan direct digitalWrite
- *   - Added interval validation: Handle interval <= 0 edge case
- *   - Force relay OFF (bypass ratelimit) di emergency stop & reset untuk instant safety
- *   - Prevents relay stuck ON due to timing glitches atau race conditions
+ * Version: 4.7 (Serial Monitor Enhanced)
+ * ========================================================================
+ * Fitur Serial Monitor:
+ * - Boot Counter
+ * - Status sistem lengkap (mode aktif, relay, emergency stop, lock)
+ * - Log start/stop mode
+ * - Log input setting mode
+ * - Log error dan reset
+ * - Daftar mode aktif saat boot dan setiap perubahan
+ * ========================================================================
  */
 
-// ================================================================
-// LIBRARY DEPENDENCIES & HARDWARE INTERFACES
-// ================================================================
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <TM1637Display.h>
+#include <EEPROM.h>
 
-/*
- * REQUIRED LIBRARIES:
- * • Wire.h: I2C communication untuk LCD display
- * • LiquidCrystal_I2C.h: 20x4 LCD display control
- * • Keypad.h: 4x4 matrix keypad interface
- * • TM1637Display.h: 7-segment display control
- * • EEPROM.h: Non-volatile data storage
- */
-#include <Wire.h>              // I2C communication protocol
-#include <LiquidCrystal_I2C.h> // I2C LCD display driver
-#include <Keypad.h>            // Matrix keypad interface
-#include <TM1637Display.h>     // 7-segment display control
-#include <EEPROM.h>            // Internal EEPROM storage
+// ========== PIN & KONSTAN ==========
+#define TM1637_CLK 4
+#define TM1637_DIO 5
+TM1637Display display(TM1637_CLK, TM1637_DIO);
 
-// ================================================================
-// SYSTEM CONSTANTS & GLOBAL CONFIGURATION
-// ================================================================
+#define EEPROM_MAGIC_ADDR 0
+#define EEPROM_DATA_START 2
+#define EEPROM_MAGIC_NUMBER 0x1234
+const unsigned long MAX_BOOTS = 2500UL;
 
-/*
- * TM1637 7-SEGMENT DISPLAY CONFIGURATION:
- * ========================================
- * 4-digit display untuk real-time timing visualization
- * CLK: Clock signal pin
- * DIO: Data I/O pin
- * Brightness: Auto-adjusted untuk optimal visibility
- */
-#define TM1637_CLK 4                           // Clock pin untuk TM1637 display
-#define TM1637_DIO 5                           // Data I/O pin untuk TM1637 display
-TM1637Display display(TM1637_CLK, TM1637_DIO); // TM1637 display object
-
-/*
- * EEPROM MEMORY MANAGEMENT SYSTEM:
- * ================================
- * Non-volatile storage untuk persistent data across power cycles
- *
- * Memory Map:
- * Address 0-1: Magic Number (0x1234) - Data validation
- * Address 2+: Mode Times Array (32 modes × 2 bytes each)
- * Address X: Boot Counter (calculated offset)
- *
- * Data Protection:
- * • Magic number validation untuk detect corrupted data
- * • Structured addressing untuk prevent conflicts
- * • Boot counter isolation untuk security
- */
-#define EEPROM_MAGIC_ADDR 0        // EEPROM address untuk magic number (2 bytes)
-#define EEPROM_DATA_START 2        // EEPROM starting address untuk mode times data
-#define EEPROM_MAGIC_NUMBER 0x1234 // Magic validation number (4660 decimal)
-
-/*
- * BOOT COUNTER SECURITY SYSTEM:
- * =============================
- * Equipment protection through usage limit enforcement
- * • Tracks total system boots/startups
- * • Prevents excessive equipment wear
- * • Requires firmware re-flash untuk reset
- * • Industrial equipment lifecycle management
- */
-const unsigned long MAX_BOOTS = 2500UL; // Maximum allowed boot cycles (equipment protection)
-
-/*
- * SYSTEM MODE ENUMERATION:
- * ========================
- * 32 independent timing modes organized dalam 4 groups (A, B, C, D)
- * Each group contains 8 sub-modes untuk maximum flexibility
- *
- * Mode Organization:
- * • Group A: Modes A1-A8 (Light duty cycles)
- * • Group B: Modes B1-B8 (Medium duty cycles)
- * • Group C: Modes C1-C8 (Heavy duty cycles)
- * • Group D: Modes D1-D8 (Special/Custom cycles)
- *
- * Applications:
- * • Different wire gauges require different timing
- * • Various twisting speeds untuk quality control
- * • Multi-stage processes dengan preset sequences
- * • Quality grades dengan specific timing requirements
- */
-enum SystemMode
-{
-  MODE_IDLE, // System idle state (no active timing)
-
-  // GROUP A: Light Duty Timing Modes (A1-A8)
-  MODE_A1, // Light duty mode 1
-  MODE_A2, // Light duty mode 2
-  MODE_A3, // Light duty mode 3
-  MODE_A4, // Light duty mode 4
-  MODE_A5, // Light duty mode 5
-  MODE_A6, // Light duty mode 6
-  MODE_A7, // Light duty mode 7
-  MODE_A8, // Light duty mode 8
-
-  // GROUP B: Medium Duty Timing Modes (B1-B8)
-  MODE_B1, // Medium duty mode 1
-  MODE_B2, // Medium duty mode 2
-  MODE_B3, // Medium duty mode 3
-  MODE_B4, // Medium duty mode 4
-  MODE_B5, // Medium duty mode 5
-  MODE_B6, // Medium duty mode 6
-  MODE_B7, // Medium duty mode 7
-  MODE_B8, // Medium duty mode 8
-
-  // GROUP C: Heavy Duty Timing Modes (C1-C8)
-  MODE_C1, // Heavy duty mode 1
-  MODE_C2, // Heavy duty mode 2
-  MODE_C3, // Heavy duty mode 3
-  MODE_C4, // Heavy duty mode 4
-  MODE_C5, // Heavy duty mode 5
-  MODE_C6, // Heavy duty mode 6
-  MODE_C7, // Heavy duty mode 7
-  MODE_C8, // Heavy duty mode 8
-
-  // GROUP D: Special/Custom Timing Modes (D1-D8)
-  MODE_D1, // Special mode 1
-  MODE_D2, // Special mode 2
-  MODE_D3, // Special mode 3
-  MODE_D4, // Special mode 4
-  MODE_D5, // Special mode 5
-  MODE_D6, // Special mode 6
-  MODE_D7, // Special mode 7
-  MODE_D8  // Special mode 8
+enum SystemMode {
+  MODE_IDLE,
+  MODE_A1, MODE_A2, MODE_A3, MODE_A4, MODE_A5, MODE_A6, MODE_A7, MODE_A8,
+  MODE_B1, MODE_B2, MODE_B3, MODE_B4, MODE_B5, MODE_B6, MODE_B7, MODE_B8,
+  MODE_C1, MODE_C2, MODE_C3, MODE_C4, MODE_C5, MODE_C6, MODE_C7, MODE_C8,
+  MODE_D1, MODE_D2, MODE_D3, MODE_D4, MODE_D5, MODE_D6, MODE_D7, MODE_D8
 };
+const int TOTAL_MODES = 32;
+unsigned int modeTimes[TOTAL_MODES];
 
-/*
- * MODE TIMING STORAGE SYSTEM:
- * ===========================
- * Array untuk store timing values untuk each mode
- * • Index 0-7: Group A modes (A1-A8)
- * • Index 8-15: Group B modes (B1-B8)
- * • Index 16-23: Group C modes (C1-C8)
- * • Index 24-31: Group D modes (D1-D8)
- * • Values: Timing dalam seconds (0-9999 range)
- * • Storage: EEPROM persistent across power cycles
- */
-const int TOTAL_MODES = 32;          // Total number of available modes
-unsigned int modeTimes[TOTAL_MODES]; // Timing values array untuk all modes
+// ========== STATE VARIABLES ==========
+SystemMode currentMode = MODE_IDLE;
+SystemMode nextMode = MODE_IDLE;
+SystemMode selectedNextMode = MODE_IDLE;
+SystemMode selectedModeToSet = MODE_A1;
 
-// ================================================================
-// SYSTEM STATE MANAGEMENT VARIABLES
-// ================================================================
+bool systemRunning = false;
+bool inputMode = false;
+bool waitingForTime = false;
+char currentGroup = ' ';
 
-/*
- * SYSTEM MODE CONTROL VARIABLES:
- * ==============================
- * State machine management untuk complex multi-mode operation
- *
- * Mode Flow:
- * IDLE → Mode Selection → Time Input → Execution → IDLE
- *
- * State Tracking:
- * • currentMode: Currently executing mode
- * • nextMode: Next scheduled mode (untuk chaining)
- * • selectedModeToSet: Mode being configured
- */
-SystemMode currentMode = MODE_IDLE;     // Currently active/executing mode
-SystemMode nextMode = MODE_IDLE;        // Next mode in sequence (future use)
-SystemMode selectedModeToSet = MODE_A1; // Mode currently being configured
+String inputValue = "";
+unsigned int tempValue = 0;
 
-/*
- * SYSTEM STATUS FLAGS:
- * ====================
- * Boolean flags untuk track various system states
- *
- * Initialization:
- * • displayInitialized: LCD dan TM1637 ready status
- *
- * Operation States:
- * • systemRunning: Main timer execution status
- * • inputMode: User input mode (keypad active)
- * • waitingForTime: Waiting untuk time value input
- * • modeJustFinished: Flag untuk post-execution cleanup
- *
- * UI State:
- * • currentGroup: Current display group (A, B, C, D)
- */
-bool displayInitialized = false; // Display initialization status
-bool systemRunning = false;      // Timer execution status
-bool inputMode = false;          // User input mode flag
-bool waitingForTime = false;     // Time input waiting flag
-bool modeJustFinished = false;   // Mode completion flag
-char currentGroup = ' ';         // Current display group indicator
+unsigned long previousMillis = 0;
+unsigned long interval = 0;
 
-/*
- * INPUT PROCESSING VARIABLES:
- * ===========================
- * Variables untuk handle user input dari keypad
- *
- * Input Flow:
- * Keypad Press → String Buffer → Validation → Conversion → Storage
- *
- * Variables:
- * • inputValue: String buffer untuk keypad input
- * • tempValue: Temporary storage untuk converted values
- */
-String inputValue = "";     // Keypad input buffer string
-unsigned int tempValue = 0; // Temporary value storage
+unsigned long relayOnStartTime = 0;
+const unsigned long RELAY_SAFETY_MARGIN = 500;
+#define RELAY_TIMEOUT_MULTIPLIER 1.2
+bool relayTimeoutTriggered = false;
 
-/*
- * TIMING CONTROL VARIABLES:
- * =========================
- * Non-blocking timer implementation untuk precise timing control
- *
- * Timing Strategy:
- * • previousMillis: Reference time untuk interval calculation
- * • interval: Current active timing interval (milliseconds)
- * • millis() comparison untuk non-blocking operation
- *
- * Benefits:
- * • No delay() blocking calls
- * • Responsive keypad input during timing
- * • Accurate timing regardless of other operations
- */
-unsigned long previousMillis = 0; // Reference time untuk interval calculation
-unsigned long interval = 0;       // Current timing interval (milliseconds)
+const int relayPin = 2;
+const int switchPin = 53;
+const int emergencyStopPin = 51;
 
-/*
- * RELAY SAFETY TIMEOUT SYSTEM:
- * ============================
- * Mencegah relay stuck ON dengan timeout maksimal
- * Jika relay ON lebih lama dari set time + safety margin, paksa OFF
- */
-unsigned long relayOnStartTime = 0;            // Timestamp ketika relay dinyalakan
-const unsigned long RELAY_SAFETY_MARGIN = 500; // Safety margin 500ms setelah timeout
-#define RELAY_TIMEOUT_MULTIPLIER 1.2           // Allow 20% extra time sebelum force OFF
-bool relayTimeoutTriggered = false;            // Flag untuk track jika timeout sudah pernah triggered
+int switchState = HIGH;
+int lastSwitchState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 10;
 
-// ================================================================
-// HARDWARE INTERFACE CONFIGURATION
-// ================================================================
+int emergencyStopState = HIGH;
+int lastEmergencyStopState = HIGH;
+unsigned long lastEmergencyStopTime = 0;
+const unsigned long emergencyStopDebounce = 50;
+bool emergencyStopActive = false;
 
-/*
- * RELAY OUTPUT CONTROL:
- * =====================
- * Primary actuator control untuk twisting mechanism
- *
- * Relay Specifications:
- * • Pin: Digital pin 2 (PWM capable)
- * • Type: SPST relay module
- * • Load: Up to 10A @ 250VAC / 30VDC
- * • Control: 5V logic level
- * • Protection: Flyback diode included
- *
- * Applications:
- * • Motor control untuk twisting mechanism
- * • Pneumatic valve control
- * • Electromagnetic clutch engagement
- * • Process equipment activation
- */
-const int relayPin = 2; // Relay control output pin
+bool relayState = false;
+unsigned long lastRelayChange = 0;
 
-/*
- * SWITCH INPUT CONTROL:
- * =====================
- * Manual control switch untuk operator interface
- *
- * Switch Specifications:
- * • Pin: Digital pin 53 (INPUT_PULLUP)
- * • Type: SPST momentary atau maintained switch
- * • Function: Start/stop control
- * • Protection: Internal pull-up resistor
- * • Logic: LOW = pressed, HIGH = released
- */
-const int switchPin = 53; // Manual control switch input pin
-
-/*
- * EMERGENCY STOP INPUT:
- * =====================
- * Safety-critical emergency stop button untuk industrial safety
- *
- * Emergency Stop Specifications:
- * • Pin: Digital pin 51 (INPUT_PULLUP)
- * • Type: SPST momentary push button (normally open, safety standard)
- * • Function: Immediate system shutdown & relay disable
- * • Protection: Industrial-grade debouncing (50ms)
- * • Logic: LOW = emergency stop activated, HIGH = normal operation
- * • Behavior: Non-blocking check every loop iteration
- * • Response Time: <50ms from button press to relay OFF
- *
- * Safety Features - Emergency Stop (PIN 51):
- * • Dual-function: Press once to lock, press again to reset
- * • Separate pin untuk independent monitoring
- * • Debouncing: 50ms hardware + 50ms software untuk eliminate false triggers
- * • First Press: Instantly stops systemRunning, forces relay OFF with interrupt protection
- * • Second Press: Resets all system state while preserving EEPROM (boot counter, mode times)
- * • Works even if keypad input is locked - highest priority in loop
- * • Blocks relay energization AND prevents new mode starts
- * • Immediate action: <50ms from button press to relay OFF
- * • LCD Feedback: Displays "!!!EMERGENCY STOP!!!" dengan reset instructions
- * • Serial Logging: Detailed state change messages untuk monitoring
- *
- * Relay Safety Features (5-Layer Defense):
- * • Improved Ratelimit: Only limits relay ON (100ms AC load protection)
- * • Immediate OFF: Relay OFF is NEVER delayed - safety critical
- * • Loop Check: Forces relay OFF every cycle if !systemRunning
- * • Timer Validation: Double-check relay OFF dengan direct digitalWrite at completion
- * • Edge Case Handling: Validates interval > 0 before executing timer
- * • Emergency Override: Bypass ratelimit for emergency/reset OFF signals
- *
- * Application:
- * • Cable twisting machine emergency shutdown
- * • Operator safety during malfunction atau equipment jam
- * • Emergency maintenance access tanpa full Arduino restart
- * • Prevents relay stuck ON condition dari timing glitches
- * • Compliance dengan industrial safety standards (IEC 60204-1)
- */
-const int emergencyStopPin = 51; // Emergency stop button input pin
-
-/*
- * ADVANCED SWITCH DEBOUNCING & EMI PROTECTION:
- * ============================================
- * Industrial-grade noise filtering untuk reliable operation
- *
- * EMI Protection Features:
- * • Software debouncing dengan configurable delay
- * • State change detection untuk edge triggering
- * • Noise filtering untuk industrial environments
- * • False trigger elimination
- *
- * Performance Tuning:
- * • debounceDelay: 10ms untuk optimal responsiveness
- * • State validation untuk confirm genuine presses
- * • EMI rejection untuk 50/60Hz interference
- */
-int switchState = HIGH;                 // Current debounced switch state
-int lastSwitchState = HIGH;             // Previous switch state untuk edge detection
-unsigned long lastDebounceTime = 0;     // Last debounce timestamp
-const unsigned long debounceDelay = 10; // Debounce delay (10ms untuk responsiveness)
-
-/*
- * EMERGENCY STOP DEBOUNCING:
- * ==========================
- * Industrial-grade debouncing untuk safety button
- */
-int emergencyStopState = HIGH;                  // Current debounced emergency stop state
-int lastEmergencyStopState = HIGH;              // Previous emergency stop state
-unsigned long lastEmergencyStopTime = 0;        // Last debounce timestamp untuk emergency stop
-const unsigned long emergencyStopDebounce = 50; // 50ms debounce untuk safety button
-bool emergencyStopActive = false;               // Flag untuk track active emergency stop condition
-unsigned long emergencyStopPressCount = 0;      // Counter untuk multiple presses saat emergency active
-unsigned long emergencyStopLastPressTime = 0;   // Last press timestamp untuk detect second press
-bool readyForReset = false;                     // Flag untuk indicate sistem siap di-reset
-
-/*
- * RELAY STATE MANAGEMENT:
- * =======================
- * Advanced relay control dengan state tracking
- *
- * Features:
- * • State tracking untuk prevent unnecessary switching
- * • Change timestamp untuk timing analysis
- * • Relay protection dari rapid cycling
- * • System diagnostics untuk relay health
- */
-bool relayState = false;           // Current relay state (ON/OFF)
-unsigned long lastRelayChange = 0; // Timestamp of last relay state change
-
-// Variabel untuk switch konstan tanpa jeda
 bool switchPressed = false;
 unsigned long switchPressTime = 0;
-const unsigned long switchHoldDelay = 100; // Delay minimal antara aksi switch
-bool constantSwitchMode = false;           // Mode switch konstan
+const unsigned long switchHoldDelay = 100;
 
-// Variabel untuk proteksi system dari interferensi AC
 bool systemStable = true;
 unsigned long lastSystemCheck = 0;
 int errorCount = 0;
 
-int scrollOffset = 0; // 0 = Grup A–C, 1 = Grup D
-int columnOffset = 0; // 0 = kolom 1–4, 1 = kolom 5–8
+int activeModeIndices[TOTAL_MODES];
+int activeModeCount = 0;
+int activeModePage = 0;
+const int MODES_PER_PAGE = 6;
 
-// Boot counter (disimpan di EEPROM)
 unsigned long bootCount = 0;
-int EEPROM_BOOT_ADDR = 0; // akan di-set di setup() sesuai offset
+int EEPROM_BOOT_ADDR = 0;
 bool systemLocked = false;
 
-// ------------------ LCD & Keypad Setup ------------------
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-LiquidCrystal_I2C lcd(0x27, 20, 4); // LCD 20x4
-
-const byte ROWS = 4;
-const byte COLS = 4;
+const byte ROWS = 4, COLS = 4;
 char keys[ROWS][COLS] = {
-    {'1', '2', '3', 'A'},
-    {'4', '5', '6', 'B'},
-    {'7', '8', '9', 'C'},
-    {'*', '0', '#', 'D'}};
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+// byte rowPins[ROWS] = {22,24,26,28}; // LAMA
+// byte colPins[COLS] = {30,32,34,36}; // LAMA
 
-// byte rowPins[ROWS] = {30, 32, 34, 36}; //untuk yg lurus 
-// byte colPins[COLS] = {22, 24, 26, 28};
-
-byte rowPins[ROWS] = {22, 24, 26, 28}; // untuk silang keypad
-byte colPins[COLS] = {30, 32, 34, 36};
+byte colPins[COLS] = {22,24,26,28}; // BARU
+byte rowPins[ROWS] = {30,32,34,36}; // MARU
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
-// ------------------ Fungsi Utilitas ------------------
+// ========== SERIAL LOG FUNCTIONS ==========
+void serialPrintHeader() {
+  Serial.println("========================================");
+  Serial.println(" TWISTING CONTROL SYSTEM v4.7");
+  Serial.println("========================================");
+}
 
-// Fungsi untuk menyimpan data ke EEPROM
-void saveToEEPROM()
-{
-  // Tulis magic number untuk validasi
+void serialPrintBootInfo() {
+  Serial.print("Boot Counter: ");
+  Serial.println(bootCount);
+  Serial.print("Max Boots Allowed: ");
+  Serial.println(MAX_BOOTS);
+  if (bootCount >= MAX_BOOTS) {
+    Serial.println("!!! SISTEM TERKUNCI !!! (Boot limit exceeded)");
+  } else {
+    Serial.println("Sistem siap.");
+  }
+}
+
+void serialPrintActiveModes() {
+  Serial.println("--- Daftar Mode Aktif (Waktu > 0) ---");
+  if (activeModeCount == 0) {
+    Serial.println("Tidak ada mode aktif. Tekan # untuk setting.");
+  } else {
+    for (int i = 0; i < activeModeCount; i++) {
+      int idx = activeModeIndices[i];
+      char prefix = 'A' + (idx/8);
+      int num = (idx%8)+1;
+      unsigned int timeMs = modeTimes[idx];
+      float seconds = timeMs / 1000.0;
+      Serial.print(prefix); Serial.print(num);
+      Serial.print(" : ");
+      Serial.print(timeMs); Serial.print(" ms (");
+      Serial.print(seconds, 1); Serial.println(" s)");
+    }
+  }
+  Serial.println("--------------------------------------");
+}
+
+void serialPrintSystemStatus() {
+  Serial.println("--- STATUS SISTEM ---");
+  Serial.print("Sistem Running   : "); Serial.println(systemRunning ? "YES" : "NO");
+  Serial.print("Emergency Stop   : "); Serial.println(emergencyStopActive ? "AKTIF" : "TIDAK");
+  Serial.print("System Locked    : "); Serial.println(systemLocked ? "YA" : "TIDAK");
+  Serial.print("Relay State      : "); Serial.println(relayState ? "ON" : "OFF");
+  Serial.print("Current Mode     : ");
+  if (currentMode == MODE_IDLE) Serial.println("IDLE");
+  else Serial.println(getModeString(currentMode));
+  Serial.print("Next Mode        : ");
+  if (nextMode == MODE_IDLE) Serial.println("IDLE");
+  else Serial.println(getModeString(nextMode));
+  Serial.print("Selected Next    : ");
+  if (selectedNextMode == MODE_IDLE) Serial.println("IDLE");
+  else Serial.println(getModeString(selectedNextMode));
+  Serial.print("Active Modes     : "); Serial.println(activeModeCount);
+  Serial.print("LCD Page         : "); Serial.print(activeModePage+1);
+  int totalPages = (activeModeCount + MODES_PER_PAGE - 1) / MODES_PER_PAGE;
+  Serial.print(" / "); Serial.println(totalPages);
+  Serial.println("-----------------------");
+}
+
+void serialLogModeStart(SystemMode mode) {
+  int idx = getModeIndex(mode);
+  unsigned int t = modeTimes[idx];
+  float sec = t/1000.0;
+  Serial.print("[START] Mode ");
+  Serial.print(getModeString(mode));
+  Serial.print(" -> ");
+  Serial.print(t); Serial.print(" ms (");
+  Serial.print(sec, 1); Serial.println(" s)");
+  Serial.print("Next mode after finish: ");
+  Serial.println(getModeString(findNextActiveMode(mode)));
+}
+
+void serialLogModeFinish(SystemMode mode) {
+  Serial.print("[FINISH] Mode ");
+  Serial.print(getModeString(mode));
+  Serial.println(" selesai.");
+}
+
+void serialLogRelayOn() {
+  Serial.println("[RELAY] ON");
+}
+
+void serialLogRelayOff() {
+  Serial.println("[RELAY] OFF");
+}
+
+void serialLogEmergencyStop(bool activated) {
+  if (activated) {
+    Serial.println("!!! EMERGENCY STOP AKTIF !!! Semua fungsi dikunci.");
+  } else {
+    Serial.println("Emergency STOP di-reset. Sistem normal.");
+  }
+}
+
+void serialLogSystemReset() {
+  Serial.println("!!! SYSTEM RESET oleh pengguna (tombol * tahan) !!!");
+}
+
+void serialLogEepromSave(SystemMode mode, unsigned int value) {
+  Serial.print("[EEPROM] Mode ");
+  Serial.print(getModeString(mode));
+  Serial.print(" disimpan dengan nilai ");
+  Serial.print(value); Serial.print(" ms (");
+  Serial.print(value/1000.0, 1); Serial.println(" s)");
+}
+
+void serialLogError(const char* msg) {
+  Serial.print("[ERROR] ");
+  Serial.println(msg);
+}
+
+void serialLogInputStart() {
+  Serial.println("Mode input aktif. Pengguna akan memilih mode dan memasukkan waktu.");
+}
+
+void serialLogInputModeSelected(SystemMode mode) {
+  Serial.print("Mode dipilih: ");
+  Serial.println(getModeString(mode));
+}
+
+// ========== UTILITY ==========
+void saveToEEPROM() {
   uint16_t magic = EEPROM_MAGIC_NUMBER;
   EEPROM.put(EEPROM_MAGIC_ADDR, magic);
-
-  // Simpan semua mode times
-  for (int i = 0; i < TOTAL_MODES; i++)
-  {
-    int addr = EEPROM_DATA_START + (i * sizeof(unsigned int));
+  for (int i=0; i<TOTAL_MODES; i++) {
+    int addr = EEPROM_DATA_START + i*sizeof(unsigned int);
     EEPROM.put(addr, modeTimes[i]);
   }
-
-  // Simpan boot count (unsigned long)
   EEPROM.put(EEPROM_BOOT_ADDR, bootCount);
 }
 
-// Fungsi untuk memuat data dari EEPROM
-bool loadFromEEPROM()
-{
-  // Cek magic number untuk validasi data
-  uint16_t magic = 0;
+bool loadFromEEPROM() {
+  uint16_t magic;
   EEPROM.get(EEPROM_MAGIC_ADDR, magic);
-
-  if (magic != EEPROM_MAGIC_NUMBER)
-  {
-    // Data tidak valid, inisialisasi dengan nilai default
-    for (int i = 0; i < TOTAL_MODES; i++)
-    {
-      modeTimes[i] = 0;
-    }
+  if (magic != EEPROM_MAGIC_NUMBER) {
+    for (int i=0; i<TOTAL_MODES; i++) modeTimes[i] = 0;
     bootCount = 0;
     return false;
   }
-
-  // Load data yang tersimpan
-  for (int i = 0; i < TOTAL_MODES; i++)
-  {
-    int addr = EEPROM_DATA_START + (i * sizeof(unsigned int));
+  for (int i=0; i<TOTAL_MODES; i++) {
+    int addr = EEPROM_DATA_START + i*sizeof(unsigned int);
     EEPROM.get(addr, modeTimes[i]);
   }
-
-  // Load boot count
   EEPROM.get(EEPROM_BOOT_ADDR, bootCount);
   return true;
 }
 
-// Fungsi untuk mengunci sistem (dipanggil saat bootCount >= MAX_BOOTS)
-void lockSystem()
-{
+void updateActiveModesList() {
+  activeModeCount = 0;
+  for (int i=0; i<TOTAL_MODES; i++) {
+    if (modeTimes[i] > 0) activeModeIndices[activeModeCount++] = i;
+  }
+  int maxPage = (activeModeCount > 0) ? (activeModeCount-1)/MODES_PER_PAGE : 0;
+  if (activeModePage > maxPage) activeModePage = maxPage;
+  if (activeModePage < 0) activeModePage = 0;
+}
+
+void updateSelectedNextMode() {
+  if (activeModeCount == 0) {
+    selectedNextMode = MODE_IDLE;
+    return;
+  }
+  int idx = getModeIndex(selectedNextMode);
+  bool found = false;
+  for (int i=0; i<activeModeCount; i++) {
+    if (activeModeIndices[i] == idx) { found = true; break; }
+  }
+  if (!found || selectedNextMode == MODE_IDLE) {
+    selectedNextMode = (SystemMode)(activeModeIndices[0] + 1);
+  }
+}
+
+int findPageForMode(SystemMode mode) {
+  if (activeModeCount == 0) return 0;
+  int modeIdx = getModeIndex(mode);
+  for (int i=0; i<activeModeCount; i++) {
+    if (activeModeIndices[i] == modeIdx) return i / MODES_PER_PAGE;
+  }
+  return 0;
+}
+
+void autoPageToMarkedMode() {
+  if (activeModeCount == 0) return;
+  SystemMode markedMode;
+  if (systemRunning) {
+    markedMode = currentMode;
+  } else {
+    markedMode = selectedNextMode;
+  }
+  int targetPage = findPageForMode(markedMode);
+  if (targetPage != activeModePage) {
+    activeModePage = targetPage;
+    showAllModeTimes();
+  }
+}
+
+SystemMode findNextActiveMode(SystemMode mode) {
+  if (activeModeCount == 0) return MODE_IDLE;
+  int currentIdx = getModeIndex(mode);
+  int pos = -1;
+  for (int i=0; i<activeModeCount; i++) {
+    if (activeModeIndices[i] == currentIdx) { pos = i; break; }
+  }
+  if (pos == -1) return (SystemMode)(activeModeIndices[0] + 1);
+  int nextPos = (pos + 1) % activeModeCount;
+  return (SystemMode)(activeModeIndices[nextPos] + 1);
+}
+
+void selectPreviousMode() {
+  if (activeModeCount == 0) return;
+  int currentPos = -1;
+  for (int i=0; i<activeModeCount; i++) {
+    if (activeModeIndices[i] == getModeIndex(selectedNextMode)) {
+      currentPos = i;
+      break;
+    }
+  }
+  if (currentPos == -1) currentPos = 0;
+  int newPos = (currentPos - 1 + activeModeCount) % activeModeCount;
+  selectedNextMode = (SystemMode)(activeModeIndices[newPos] + 1);
+  showAllModeTimes();
+  autoPageToMarkedMode();
+  update7Segment(selectedNextMode);
+  // Serial log
+  Serial.print("[NAVIGASI] Previous mode: ");
+  Serial.println(getModeString(selectedNextMode));
+}
+
+void selectNextMode() {
+  if (activeModeCount == 0) return;
+  int currentPos = -1;
+  for (int i=0; i<activeModeCount; i++) {
+    if (activeModeIndices[i] == getModeIndex(selectedNextMode)) {
+      currentPos = i;
+      break;
+    }
+  }
+  if (currentPos == -1) currentPos = -1;
+  int newPos = (currentPos + 1) % activeModeCount;
+  selectedNextMode = (SystemMode)(activeModeIndices[newPos] + 1);
+  showAllModeTimes();
+  autoPageToMarkedMode();
+  update7Segment(selectedNextMode);
+  Serial.print("[NAVIGASI] Next mode: ");
+  Serial.println(getModeString(selectedNextMode));
+}
+
+void lockSystem() {
   systemLocked = true;
-  // tampilkan pesan LCD
   lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("FINISH");
-  lcd.setCursor(0, 1);
-  lcd.print("program die");
-  // tampilkan di 7-seg: blank atau indikasi lock
-  uint8_t seg[4] = {0x00, 0x00, 0x00, 0x00};
-  display.setSegments(seg);
-  // pastikan relay mati
+  lcd.setCursor(0,0); lcd.print("FINISH");
+  lcd.setCursor(0,1); lcd.print("program die");
+  uint8_t blank[4] = {0,0,0,0};
+  display.setSegments(blank);
   setRelay(false);
+  Serial.println("[LOCK] Sistem terkunci karena mencapai batas boot maksimum.");
 }
 
-// Fungsi untuk kontrol relay yang aman - IMPROVED VERSION DENGAN TIMEOUT PROTECTION
-void setRelay(bool state)
-{
-  // FIRST: Check emergency stop - highest priority safety check
-  // Emergency stop ALWAYS blocks relay activation (ON)
-  // But allows relay OFF for safety!
-  if (emergencyStopActive && state)
-    return;
-
-  // Jika sistem terkunci, jangan pernah menyalakan relay
-  if (systemLocked && state)
-    return;
-
-  // CRITICAL FIX: Validate interval before allowing relay ON
-  // Prevents relay activation with invalid timing
-  if (state && interval <= 0)
-    return; // Don't turn on relay if interval is invalid
-
-  // IMPROVED: Ratelimit hanya untuk relay ON (untuk AC load protection)
-  // Relay OFF diperbolehkan immediate untuk safety!
-  if (state && millis() - lastRelayChange < 100)
-    return; // Hanya limit untuk state = true (ON)
-
-  // CRITICAL: Only change relay if state actually different
-  // Prevents unnecessary write which can cause desync
-  if (relayState != state)
-  {
-    // Matikan interrupts sementara untuk mencegah interferensi
+void setRelay(bool state) {
+  if ((emergencyStopActive || systemLocked) && state) return;
+  if (state && interval <= 0) return;
+  if (state && millis() - lastRelayChange < 100) return;
+  if (relayState != state) {
     noInterrupts();
-
     relayState = state;
-    // Write to pin immediately
-    digitalWrite(relayPin, state ? LOW : HIGH); // LOW = ON, HIGH = OFF
+    digitalWrite(relayPin, state ? LOW : HIGH);
     lastRelayChange = millis();
-
-    // CRITICAL NEW: Track relay ON time untuk timeout protection
-    if (state)
-    {
-      relayOnStartTime = millis(); // Record saat relay dinyalakan
+    if (state) {
+      relayOnStartTime = millis();
       relayTimeoutTriggered = false;
-    }
-    else
-    {
-      relayOnStartTime = 0; // Clear timeout tracking saat relay OFF
+      serialLogRelayOn();
+    } else {
+      relayOnStartTime = 0;
       relayTimeoutTriggered = false;
+      serialLogRelayOff();
     }
-
-    // Nyalakan kembali interrupts
     interrupts();
   }
 }
 
-unsigned long safeMillisDiff(unsigned long now, unsigned long previous)
-{
-  return (now >= previous) ? (now - previous) : (4294967295UL - previous + now + 1);
+unsigned long safeMillisDiff(unsigned long now, unsigned long prev) {
+  return (now >= prev) ? (now - prev) : (4294967295UL - prev + now + 1);
 }
 
-/*
- * MONITOR RELAY SAFETY TIMEOUT:
- * =============================
- * Fungsi untuk deteksi dan force OFF relay jika ON terlalu lama
- * Ini adalah safeguard terakhir untuk prevent relay stuck ON
- *
- * Timeout Logic:
- * • Saat relay ON, track waktu mulai di relayOnStartTime
- * • Hitung maksimal waktu = interval × 1.2 + safety margin 500ms
- * • Jika melampaui, paksa relay OFF
- * • Cegah repeated action dengan relayTimeoutTriggered flag
- *
- * CRITICAL: NO LCD PRINTING IN THIS FUNCTION!
- * LCD display akan corrupt jika print terlalu banyak per loop.
- * Gunakan flag untuk signal timeout, handle display di caller.
- */
-void checkRelayTimeout()
-{
-  // Jika relay sedang ON dan interval valid
-  if (relayState && relayOnStartTime > 0 && interval > 0)
-  {
-    // Hitung maksimal allowed ON time dengan safety margin
-    unsigned long maxAllowedTime = (unsigned long)(interval * RELAY_TIMEOUT_MULTIPLIER) + RELAY_SAFETY_MARGIN;
-    unsigned long currentRelayOnTime = safeMillisDiff(millis(), relayOnStartTime);
-
-    // CRITICAL: Jika relay ON melebihi waktu maksimal, paksa OFF!
-    if (currentRelayOnTime > maxAllowedTime)
-    {
-      // Cegah repeated action dengan flag
-      if (!relayTimeoutTriggered)
-      {
-        relayTimeoutTriggered = true;
-        errorCount++;
-
-        // Force relay OFF dengan atomic operation (tanpa ratelimit)
-        noInterrupts();
-        digitalWrite(relayPin, HIGH); // Force OFF immediately
-        relayState = false;
-        relayOnStartTime = 0;
-        lastRelayChange = millis();
-        interrupts();
-
-        // Stop system immediately
-        systemRunning = false;
-        modeJustFinished = true; // Signal completion untuk return ke menu
-
-        // CRITICAL: NO LCD UPDATE HERE - causes corruption!
-        // Will be handled by showModeComplete() atau recovery flow
-      }
+void checkRelayTimeout() {
+  if (relayState && relayOnStartTime>0 && interval>0) {
+    unsigned long maxAllowed = (unsigned long)(interval * RELAY_TIMEOUT_MULTIPLIER) + RELAY_SAFETY_MARGIN;
+    if (safeMillisDiff(millis(), relayOnStartTime) > maxAllowed && !relayTimeoutTriggered) {
+      relayTimeoutTriggered = true;
+      errorCount++;
+      noInterrupts();
+      digitalWrite(relayPin, HIGH);
+      relayState = false;
+      relayOnStartTime = 0;
+      lastRelayChange = millis();
+      interrupts();
+      systemRunning = false;
+      serialLogError("Relay timeout! Sistem dihentikan.");
     }
-  }
-  // Reset flag ketika relay OFF
-  else if (!relayState)
-  {
-    relayTimeoutTriggered = false;
-  }
+  } else if (!relayState) relayTimeoutTriggered = false;
 }
 
-// CRITICAL LCD HEALTH CHECK: Deteksi dan handle LED corruption otomatis
-void checkLCDHealth()
-{
-  // Jangan check kalau system locked untuk reduce complexity
-  if (systemLocked)
-    return;
-
-  static unsigned long lastLCDCheck = 0;
-  const unsigned long LCD_CHECK_INTERVAL = 10000; // Check setiap 10 detik
-  static int lcdCorruptionCount = 0;
-
-  // Jangan check terlalu sering untuk reduce overhead
-  if (millis() - lastLCDCheck < LCD_CHECK_INTERVAL)
-    return;
-
-  lastLCDCheck = millis();
-
-  // CRITICAL: Read LCD VRAM untuk deteksi corruption
-  // LCD corruption ditandai dengan:
-  // 1. Character di row tertentu menampilkan nilai invalid (kontrol karakter)
-  // 2. Display repeatedly showing kotak/bulat aneh
-  // Teknik: set cursor dan read kembali - cek apakah LCD masih responsif
-
-  // Test write-read pada posisi netral (bottom-right corner) yang jarang diupdate
-  lcd.setCursor(19, 3);
-  lcd.print(" "); // Write space
-  delay(2);       // Tiny delay untuk stabilisasi
-
-  // Simple health indicator: toggle cursor pada posisi hidden
-  // Jika LCD tidak responsif, ini akan gagal
-  switch (lcdCorruptionCount % 4)
-  {
-  case 0:
-    lcd.setCursor(19, 3);
-    lcd.print(".");
-    break;
-  case 1:
-    lcd.setCursor(19, 3);
-    lcd.print("-");
-    break;
-  case 2:
-    lcd.setCursor(19, 3);
-    lcd.print(":");
-    break;
-  case 3:
-    lcd.setCursor(19, 3);
-    lcd.print(" ");
-    break;
-  }
-
-  lcdCorruptionCount++;
-
-  // Jika sering melihat kontrol karakter atau display problem, increment error counter
-  // dan trigger reset jika terlalu banyak error
-  if (lcdCorruptionCount > 30) // Setelah 30 checks (5 menit)
-  {
-    // Reset corruption counter
-    lcdCorruptionCount = 0;
-
-    // Perform LCD reset
-    resetLCDModule();
-  }
+void checkLCDHealth() {
+  if (systemLocked) return;
+  static unsigned long lastCheck = 0;
+  const unsigned long INTERVAL = 10000;
+  static int cnt = 0;
+  if (millis() - lastCheck < INTERVAL) return;
+  lastCheck = millis();
+  lcd.setCursor(19,3); lcd.print(" ");
+  delay(2);
+  cnt++;
+  if (cnt > 30) { cnt=0; resetLCDModule(); }
 }
 
-// CRITICAL LCD RESET: Reset LCD module untuk clear corruption
-void resetLCDModule()
-{
-  // CRITICAL: Simpan current state sebelum reset
-  bool wasSystemRunning = systemRunning;
-  bool wasDisplayInitialized = displayInitialized;
-  SystemMode savedMode = currentMode;
-  SystemMode savedNextMode = nextMode;
-
-  // Stop system dulu untuk safety
-  if (systemRunning)
-  {
+void resetLCDModule() {
+  bool wasRunning = systemRunning;
+  if (systemRunning) {
     systemRunning = false;
-    noInterrupts();
-    digitalWrite(relayPin, HIGH); // Force relay OFF
-    relayState = false;
-    interrupts();
+    noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; interrupts();
   }
-
-  // CRITICAL LCD INIT: Full reset sequence
-  // This clears corruption dan reinitialize display
-  delay(100); // Wait sebelum reset untuk stabilisasi power
-
-  // Destruction dan recreation untuk full reset
-  lcd.noBacklight();
-  delay(50);
-  lcd.backlight();
-  delay(50);
-
-  // Re-initialize I2C connection
-  lcd.init();
   delay(100);
-  lcd.backlight();
-  delay(100);
-
-  // Clear VRAM dan reset ke default
-  lcd.clear();
-  delay(50);
-
-  // Restore display based on saved state
-  if (savedMode != MODE_IDLE && wasDisplayInitialized)
-  {
-    // Jika sedang dalam mode, tampilkan current mode info
-    lcd.setCursor(0, 0);
-    lcd.print("LCD Recovered");
-    lcd.setCursor(0, 1);
-    lcd.print(getModeString(savedMode));
-    lcd.print(" Mode Info");
-    delay(1500);
-  }
-
-  // Reset display flag untuk repaint
-  displayInitialized = false;
-
-  // Refresh display ke state sebelumnya
-  if (wasSystemRunning && savedMode != MODE_IDLE)
-  {
-    systemRunning = true;
-    updateRunningDisplay();
-  }
-  else
-  {
-    showMainScreen();
-  }
-
-  // Log reset untuk debugging
-  // Serial.println(F("LCD module reset from corruption"));
+  lcd.noBacklight(); delay(50); lcd.backlight(); delay(50);
+  lcd.init(); delay(100); lcd.backlight(); lcd.clear(); delay(50);
+  byte arrowRight[8] = {0x00,0x04,0x06,0x1F,0x06,0x04,0x00,0x00};
+  lcd.createChar(0, arrowRight);
+  if (wasRunning && currentMode != MODE_IDLE) {
+    showAllModeTimes();
+  } else showAllModeTimes();
 }
 
-int getModeIndex(SystemMode mode)
-{
-  return (int)mode - 1;
-}
+int getModeIndex(SystemMode mode) { return (int)mode - 1; }
 
-String getModeString(SystemMode mode)
-{
-  if (mode == MODE_IDLE)
-    return "Idle";
-  int index = getModeIndex(mode);
-  char prefix = 'A' + (index / 8);
-  int num = (index % 8) + 1;
+String getModeString(SystemMode mode) {
+  if (mode == MODE_IDLE) return "Idle";
+  int idx = getModeIndex(mode);
+  char prefix = 'A' + (idx/8);
+  int num = (idx%8)+1;
   return String(prefix) + String(num);
 }
 
-void update7Segment(SystemMode mode)
-{
-  if (mode == MODE_IDLE)
-  {
-    display.clear();
-    return;
-  }
-  int index = getModeIndex(mode);
-  char prefix = 'A' + (index / 8);
-  int num = (index % 8) + 1;
-
-  uint8_t seg[4] = {0x00, 0x00, 0x00, 0x00};
-  switch (prefix)
-  {
-  case 'A':
-    seg[0] = 0x77;
-    break;
-  case 'B':
-    seg[0] = 0x7C;
-    break;
-  case 'C':
-    seg[0] = 0x39;
-    break;
-  case 'D':
-    seg[0] = 0x5E;
-    break;
-  default:
-    seg[0] = 0x00;
-    break;
+void update7Segment(SystemMode mode) {
+  if (mode == MODE_IDLE) { display.clear(); return; }
+  int idx = getModeIndex(mode);
+  char prefix = 'A' + (idx/8);
+  int num = (idx%8)+1;
+  uint8_t seg[4] = {0,0,0,0};
+  switch(prefix) {
+    case 'A': seg[0]=0x77; break;
+    case 'B': seg[0]=0x7C; break;
+    case 'C': seg[0]=0x39; break;
+    case 'D': seg[0]=0x5E; break;
   }
   seg[1] = display.encodeDigit(num);
   display.setSegments(seg);
 }
 
-// Fungsi untuk update display 7-segment saat idle
-void updateIdleDisplay()
-{
-  static unsigned long lastUpdate = 0;
-  static bool showNextMode = false;
-  static unsigned long modeCompleteShowTime = 0;         // Timer untuk hold showModeComplete display
-  const unsigned long MODE_COMPLETE_DISPLAY_TIME = 1500; // Tampilkan 1.5 detik
-
-  // Jika sistem terkunci, tampilkan info lock terus
-  if (systemLocked)
-  {
-    // already set in lockSystem()
-    return;
-  }
-
-  // Jika mode baru saja selesai, hold display sebentar
-  if (modeJustFinished)
-  {
-    // First time mode just finished
-    if (modeCompleteShowTime == 0)
-    {
-      modeCompleteShowTime = millis(); // Catat waktu mulai showing
-    }
-
-    // Show completion message untuk 1.5 detik
-    if (safeMillisDiff(millis(), modeCompleteShowTime) < MODE_COMPLETE_DISPLAY_TIME)
-    {
-      update7Segment(nextMode);
-      return; // Hold sempurna, jangan overwrite
-    }
-    else
-    {
-      // Waktu sudah cukup, reset timer tapi JANGAN clear modeJustFinished
-      // Biarkan readSwitch() yang clear flag setelah startMode(nextMode)
-      modeCompleteShowTime = 0;
-      displayInitialized = false;
-
-      // Display menu utama
-      lcd.clear();
-      delay(5);
-      showAllModeTimes();
-      return; // Return tanpa clear modeJustFinished
-    }
-  }
-
-  // Update setiap 3 detik untuk bergantian menampilkan info (hanya saat idle normal)
-  if (millis() - lastUpdate > 3000)
-  {
-    lastUpdate = millis();
-    showNextMode = !showNextMode;
-
-    if (showNextMode)
-    {
-      // Cari mode pertama yang memiliki waktu > 0 untuk ditampilkan
-      SystemMode firstMode = MODE_IDLE;
-      for (int i = 0; i < TOTAL_MODES; i++)
-      {
-        if (modeTimes[i] > 0)
-        {
-          firstMode = (SystemMode)(i + 1);
-          break;
-        }
-      }
-
-      if (firstMode != MODE_IDLE)
-      {
-        update7Segment(firstMode);
-      }
-      else
-      {
-        // Jika tidak ada mode yang diset, tampilkan "rdy" (ready)
-        uint8_t seg[4] = {0x50, 0x5E, 0x6E, 0x00}; // r-d-y
-        display.setSegments(seg);
-      }
-    }
-    else
-    {
-      // Tampilkan "rdy" atau info lain saat bergantian
-      uint8_t seg[4] = {0x50, 0x5E, 0x6E, 0x00}; // r-d-y
-      display.setSegments(seg);
+void updateIdleDisplay() {
+  static unsigned long lastUpd=0;
+  const unsigned long INTERVAL = 3000;
+  if (systemLocked) return;
+  if (millis()-lastUpd > INTERVAL) {
+    lastUpd = millis();
+    SystemMode modeToShow = (systemRunning ? currentMode : selectedNextMode);
+    if (modeToShow != MODE_IDLE) {
+      update7Segment(modeToShow);
+    } else {
+      uint8_t rdy[4] = {0x50,0x5E,0x6E,0x00};
+      display.setSegments(rdy);
     }
   }
 }
 
-// ------------------ Setup & Loop ------------------
+void printModeValue(int modeIdx, int col, int row, bool isSelected) {
+  lcd.setCursor(col, row);
+  char prefix = 'A' + (modeIdx/8);
+  int num = (modeIdx%8)+1;
+  unsigned int timeMs = modeTimes[modeIdx];
+  int secondsInt = timeMs / 1000;
+  int decimals = (timeMs % 1000) / 100;
+  lcd.print(prefix);
+  lcd.print(num);
+  lcd.print(' ');
+  lcd.print(secondsInt);
+  lcd.print('.');
+  lcd.print(decimals);
+  lcd.print('s');
+  if (isSelected) lcd.write(0xFF); else lcd.print(' ');
+  int printed = 7 + (secondsInt>=10?1:0) + (isSelected?1:0);
+  for (int i=printed; i<9; i++) lcd.print(' ');
+}
 
-void setup()
-{
-  // Aktifkan Serial untuk menampilkan jumlah boot
-  Serial.begin(115200);
-
-  // Setup relay dengan proteksi ekstra untuk AC load
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, HIGH); // Pastikan relay OFF saat startup
-  relayState = false;
-
-  // Setup switch dengan pull-up internal dan filtering ekstra
-  pinMode(switchPin, INPUT_PULLUP);
-
-  // Setup emergency stop button dengan pull-up internal
-  pinMode(emergencyStopPin, INPUT_PULLUP);
-
-  // Delay stabilisasi lebih lama untuk AC load
-  delay(200);
-
-  // Setup LCD dengan error handling dan proteksi noise
-  lcd.init();
-  lcd.backlight();
-
-  // Setup 7-segment display
-  display.setBrightness(0x0f);
-  display.clear();
-
-  // Hitung alamat penyimpanan boot count setelah data modeTimes
-  EEPROM_BOOT_ADDR = EEPROM_DATA_START + (TOTAL_MODES * sizeof(unsigned int));
-
-  // Load data dari EEPROM (modeTimes + bootCount)
-  bool dataLoaded = loadFromEEPROM();
-
-  // --- BOOT COUNTER: tambah 1 setiap boot ---
-  bootCount++;
-  // Simpan segera ke EEPROM agar tahan power loss
-  EEPROM.put(EEPROM_BOOT_ADDR, bootCount);
-
-  // Cetak ke Serial Monitor sesuai permintaan
-  // CRITICAL FIX: Serial output disabled by default for stability
-  // Enable below only for debugging boot counter
-  // This reduces potential for timing issues and LCD corruption
-
-  // Serial.println(F("================================"));
-  // Serial.println(F("     BOOT COUNTER (Device)"));
-  // Serial.println(F("================================"));
-  // Serial.print(F("Jumlah Booting : "));
-  // Serial.println(bootCount);
-  // Serial.println(F("================================"));
-
-  // Jika bootCount sudah melebihi batas, set locked
-  if (bootCount >= MAX_BOOTS)
-  {
-    systemLocked = true;
-  }
-
-  // Initialize dengan delay untuk stabilisasi
-  showSplashScreen();
-
-  // Tampilkan status data yang dimuat
+void showAllModeTimes() {
   lcd.clear();
-  lcd.setCursor(2, 1);
-  if (dataLoaded)
-  {
-    lcd.print("Data Dimuat dari");
-    lcd.setCursor(4, 2);
-    lcd.print("EEPROM");
-  }
-  else
-  {
-    lcd.print("Data Kosong");
-    lcd.setCursor(3, 2);
-    lcd.print("Mulai Baru");
-  }
-  delay(1200);
+  updateActiveModesList();
+  updateSelectedNextMode();
 
-  // Jika terkunci (boot >= MAX), tampilkan FINISH program die
-  if (systemLocked)
-  {
-    lockSystem();
-    // jangan lanjutkan normal UI
+  if (activeModeCount == 0) {
+    lcd.setCursor(4,1); lcd.print("Tidak ada");
+    lcd.setCursor(3,2); lcd.print("mode aktif");
+    lcd.setCursor(2,3); lcd.print("Tekan # untuk set");
     return;
   }
 
-  showMainScreen();
+  int totalPages = (activeModeCount + MODES_PER_PAGE - 1) / MODES_PER_PAGE;
+  
+  lcd.setCursor(0,0);
+  if (systemRunning) lcd.write(byte(0)); else lcd.print(" ");
+  lcd.setCursor(1,0);
+  lcd.print(activeModeCount);
+  lcd.print(" Mode ");
+  lcd.print("Page:");
+  lcd.print(activeModePage+1);
+  lcd.print(" of ");
+  lcd.print(totalPages);
 
-  // Initialize noise filter dan system protection
+  int start = activeModePage * MODES_PER_PAGE;
+  int end = start + MODES_PER_PAGE;
+  if (end > activeModeCount) end = activeModeCount;
+  
+  int markedModeIdx = -1;
+  if (systemRunning) {
+    markedModeIdx = getModeIndex(currentMode);
+  } else {
+    markedModeIdx = getModeIndex(selectedNextMode);
+  }
+
+  for (int row=1; row<=3; row++) {
+    int leftIdx = start + (row-1);
+    int rightIdx = leftIdx + 3;
+    if (leftIdx < end) {
+      bool isSel = (activeModeIndices[leftIdx] == markedModeIdx);
+      printModeValue(activeModeIndices[leftIdx], 0, row, isSel);
+    } else {
+      lcd.setCursor(0, row); lcd.print("         ");
+    }
+    if (rightIdx < end) {
+      bool isSel = (activeModeIndices[rightIdx] == markedModeIdx);
+      printModeValue(activeModeIndices[rightIdx], 10, row, isSel);
+    } else {
+      lcd.setCursor(10, row); lcd.print("         ");
+    }
+  }
+}
+
+// ========== SETUP ==========
+void setup() {
+  Serial.begin(115200);
+  serialPrintHeader();
+  
+  pinMode(relayPin, OUTPUT); digitalWrite(relayPin, HIGH);
+  pinMode(switchPin, INPUT_PULLUP);
+  pinMode(emergencyStopPin, INPUT_PULLUP);
+  delay(200);
+  lcd.init(); lcd.backlight();
+  byte arrowRight[8] = {0x00,0x04,0x06,0x1F,0x06,0x04,0x00,0x00};
+  lcd.createChar(0, arrowRight);
+  display.setBrightness(0x0f); display.clear();
+
+  EEPROM_BOOT_ADDR = EEPROM_DATA_START + TOTAL_MODES*sizeof(unsigned int);
+  bool dataLoaded = loadFromEEPROM();
+  updateActiveModesList();
+  updateSelectedNextMode();
+
+  bootCount++;
+  EEPROM.put(EEPROM_BOOT_ADDR, bootCount);
+  serialPrintBootInfo();
+  
+  if (bootCount >= MAX_BOOTS) {
+    systemLocked = true;
+    Serial.println("[WARNING] Batas boot tercapai. Sistem dikunci.");
+  }
+
+  // Splash screen
+  lcd.clear();
+  lcd.setCursor(5,0); lcd.print("Timer Multi");
+  lcd.setCursor(5,1); lcd.print("CONTROLLER");
+  lcd.setCursor(2,3); lcd.print("Versi : 32 mode");
+  delay(1500);
+  lcd.clear();
+  lcd.setCursor(3,0); lcd.print("Build BY AGUS F");
+  lcd.setCursor(3,2); lcd.print("  29 Mei 2026");
+  lcd.setCursor(0,3); lcd.print("//github.com/sembre/");
+  delay(2000);
+
+  lcd.clear();
+  lcd.setCursor(2,1); lcd.print(dataLoaded ? "Data Dimuat" : "Data Kosong");
+  lcd.setCursor(4,2); lcd.print(dataLoaded ? "dari EEPROM" : "Mulai Baru");
+  delay(1200);
+
+  if (systemLocked) { 
+    lockSystem(); 
+    Serial.println("Sistem terkunci karena boot limit.");
+    return;
+  }
+  
+  showAllModeTimes();
   lastRelayChange = millis();
   lastSystemCheck = millis();
   errorCount = 0;
-
-  // CRITICAL: Initialize relay timeout tracking
   relayOnStartTime = 0;
   relayTimeoutTriggered = false;
-
-  // Set tampilan awal 7-segment
   updateIdleDisplay();
+  
+  serialPrintActiveModes();
+  serialPrintSystemStatus();
+  Serial.println("Siap menerima perintah.");
 }
 
-void loop()
-{
-  // ===== CRITICAL: CHECK EMERGENCY STOP FIRST =====
-  // This must be FIRST in every loop iteration for safety
-  // Emergency stop takes absolute priority over all other operations
+void loop() {
   checkEmergencyStop();
-
-  // If emergency stop is active, still process critical safety tasks
-  if (emergencyStopActive)
-  {
-    // CRITICAL FIX: Continue checking emergency stop for reset possibility
-    // and ensure relay stays OFF - don't just return!
-    // Force relay OFF every iteration while in emergency
-    if (relayState)
-    {
-      noInterrupts();
-      digitalWrite(relayPin, HIGH); // Force OFF
-      relayState = false;
-      relayOnStartTime = 0;
-      interrupts();
-    }
-    // Small delay to prevent CPU spin
+  if (emergencyStopActive) {
+    if (relayState) { noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts(); }
     delayMicroseconds(100);
-    return; // Now it's safe to return
-  }
-
-  // Jika sistem terkunci, batasi aktivitas: hanya tampilkan lock dan tidak merespons input
-  if (systemLocked)
-  {
-    // Serial output disabled for stability in locked state
-    // Locked state is permanent - requires firmware re-flash to unlock
     return;
   }
-
-  // ===== CRITICAL: CHECK RELAY TIMEOUT IMMEDIATELY =====
-  // This must happen BEFORE runSystem to catch timeout before normal completion
-  // provides absolute safety guarantee
+  if (systemLocked) return;
   checkRelayTimeout();
-
-  // ===== LCD HEALTH CHECK: Auto-detect dan recovery corruption =====
-  // Deteksi LCD character corruption dan reset jika perlu
   checkLCDHealth();
 
-  static unsigned long lastKeypadTime = 0;
-  static unsigned long lastWatchdog = 0;
-  const unsigned long keypadInterval = 50;     // Kurangi interval untuk responsivitas
-  const unsigned long watchdogInterval = 2000; // 2 detik untuk AC load
+  static unsigned long lastKey=0, lastDog=0;
+  const unsigned long KEY_INT=50, DOG_INT=2000;
 
-  // System stability check untuk AC load protection
-  if (millis() - lastSystemCheck >= 5000) // Cek setiap 5 detik
-  {
+  if (millis() - lastSystemCheck >= 5000) {
     lastSystemCheck = millis();
-
-    // Reset error count jika sistem stabil
-    if (systemStable)
-    {
-      errorCount = 0;
-    }
-
-    // Jika terlalu banyak error, force relay OFF saja (jangan reinit LCD)
-    // CRITICAL FIX: lcd.init() corruption removed - causes LCD blank/garbled
-    if (errorCount > 3)
-    {
-      noInterrupts();
-      digitalWrite(relayPin, HIGH); // Force OFF
-      relayState = false;
-      relayOnStartTime = 0;
-      interrupts();
-      errorCount = 0;
-      systemStable = true;
+    if (systemStable) errorCount=0;
+    if (errorCount>3) {
+      noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts();
+      errorCount=0; systemStable=true;
+      serialLogError("Terlalu banyak error, sistem distabilkan.");
     }
   }
-
-  // CRITICAL IMPROVEMENT: Watchdog with relay safety - NO lcd.init()!
-  // lcd.init() during operation causes LCD corruption/blank display
-  if (millis() - lastWatchdog >= watchdogInterval)
-  {
-    lastWatchdog = millis();
-
-    // Force relay OFF as safety check every cycle
-    // This prevents relay stuck ON condition
-    if (!systemRunning && relayState)
-    {
-      noInterrupts();
-      digitalWrite(relayPin, HIGH); // Force OFF
-      relayState = false;
-      relayOnStartTime = 0;
-      interrupts();
+  if (millis() - lastDog >= DOG_INT) {
+    lastDog = millis();
+    if (!systemRunning && relayState) {
+      noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts();
+      Serial.println("[WATCHDOG] Relay dimatikan karena tidak dalam mode running.");
     }
   }
-
-  if (millis() - lastKeypadTime >= keypadInterval)
-  {
-    lastKeypadTime = millis();
-    char key = keypad.getKey();
-    if (key)
-      handleKeypadInput(key);
+  if (millis() - lastKey >= KEY_INT) {
+    lastKey = millis();
+    char k = keypad.getKey();
+    if (k) handleKeypadInput(k);
   }
-
-  // Baca switch setiap loop untuk responsivitas maksimal
   readSwitch();
-
-  // CRITICAL SAFETY: Ensure relay OFF jika system tidak running
-  // QUADRUPLE check untuk prevent relay stuck ON
-  if (!systemRunning && relayState)
-  {
-    // Use aggressive force-off to ensure reliability
-    noInterrupts();
-    digitalWrite(relayPin, HIGH); // Direct hardware OFF
-    relayState = false;
-    relayOnStartTime = 0;
-    interrupts();
+  if (!systemRunning && relayState) {
+    noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts();
   }
-
-  if (systemRunning && interval > 0)
+  if (systemRunning && interval>0) {
     runSystem();
-  else
-  {
-    // Update 7-segment display saat sistem idle
+  } else {
     updateIdleDisplay();
   }
 }
 
-// ------------------ Fungsi Tampilan ------------------
-
-void showSplashScreen()
-{
-  lcd.clear();
-  lcd.setCursor(5, 0);
-  lcd.print("Timer Multi");
-  lcd.setCursor(5, 1);
-  lcd.print("CONTROLLER");
-  lcd.setCursor(2, 3);
-  lcd.print("Versi : 32 mode");
-  delay(1500);
-  lcd.clear();
-  lcd.setCursor(3, 0);
-  lcd.print("Build BY AGUS F");
-  lcd.setCursor(3, 2);
-  lcd.print("24 Februari 2026");
-  lcd.setCursor(0, 3);
-  lcd.print("//github.com/sembre/");
-  delay(2000);
-}
-
-void showMainScreen()
-{
-  lcd.clear();
-  if (systemRunning)
-  {
-    updateRunningDisplay();
+void startMode(SystemMode mode) {
+  if (systemLocked) return;
+  int idx = getModeIndex(mode);
+  if (idx < 0 || idx >= TOTAL_MODES || modeTimes[idx] == 0) {
+    if (activeModeCount > 0) {
+      mode = (SystemMode)(activeModeIndices[0] + 1);
+      idx = activeModeIndices[0];
+    } else return;
   }
-  else
-  {
-    showAllModeTimes();
-    setRelay(false); // Gunakan fungsi setRelay yang aman
-    // JANGAN clear display - biarkan menampilkan mode terakhir atau status
-    updateIdleDisplay();
-  }
-}
-
-void showAllModeTimes()
-{
-  lcd.clear();
-
-  lcd.setCursor(0, 0);
-  lcd.print("    ");
-  for (int j = 0; j < 4; j++)
-  {
-    lcd.print(columnOffset * 4 + j + 1);
-    lcd.print("   ");
-  }
-
-  // Tampilkan indikator mode switch di pojok kanan atas
-  lcd.setCursor(19, 0);
-  if (constantSwitchMode)
-  {
-    lcd.print("K"); // K = Konstan
-  }
-  else
-  {
-    lcd.print("N"); // N = Normal
-  }
-
-  for (int i = 0; i < 3; i++)
-  {
-    int groupIndex = scrollOffset * 3 + i;
-    if (groupIndex >= 4)
-      break;
-
-    lcd.setCursor(0, i + 1);
-    char label = 'A' + groupIndex;
-    lcd.print(label);
-    lcd.print(":");
-
-    for (int j = 0; j < 4; j++)
-    {
-      int col = columnOffset * 4 + j;
-      int index = groupIndex * 8 + col;
-      float detik = modeTimes[index] / 1000.0;
-
-      lcd.print(" ");
-      if (detik < 10)
-        lcd.print("");
-      lcd.print(detik, 1);
-    }
-  }
-}
-
-void updateRunningDisplay()
-{
-  // Baris 0: hanya sekali ditulis saat awal mode
-  static bool initialized = false;
-  if (!displayInitialized)
-  {
-    lcd.clear(); // Clear first untuk prevent corruption
-    delay(5);
-    lcd.setCursor(0, 0);
-    lcd.print("Menjalankan ");
-    lcd.print(getModeString(currentMode));
-    lcd.print(" ");
-    lcd.print(modeTimes[getModeIndex(currentMode)] / 1000.0, 1);
-    lcd.print("s");
-
-    lcd.setCursor(0, 2);
-    lcd.print("Selanjutnya ");
-    lcd.print(getModeString(nextMode));
-    lcd.print(" ");
-    lcd.print(modeTimes[getModeIndex(nextMode)] / 1000.0, 1);
-    lcd.print("s");
-
-    update7Segment(currentMode);
-    displayInitialized = true;
-  }
-
-  // Baris 1: progress bar - CRITICAL: hanya update jika progress berubah signifikan
-  // Setiap loop update 20 print = LCD corruption risk
-  static int lastFilledBlocks = -1;
-
-  int barLength = 20;
-  unsigned long elapsed = safeMillisDiff(millis(), previousMillis);
-  int filledBlocks = (interval > 0) ? map(elapsed, 0, interval, 0, barLength) : 0;
-  if (filledBlocks > barLength)
-    filledBlocks = barLength;
-
-  // Hanya update jika perubahan >= 1 block (mengurangi dari 20 print jadi 1-2 print)
-  if (filledBlocks != lastFilledBlocks)
-  {
-    lastFilledBlocks = filledBlocks;
-
-    lcd.setCursor(0, 1);
-    for (int i = 0; i < barLength; i++)
-    {
-      lcd.print(i < filledBlocks ? "\xFF" : " ");
-    }
-  }
-}
-
-void showModeComplete()
-{
-  lcd.clear();
-  delay(10); // Small stabilization delay - prevent LCD corruption
-
-  lcd.setCursor(0, 0);
-  lcd.print(getModeString(currentMode));
-  lcd.print(" Selesai (");
-  lcd.print(modeTimes[getModeIndex(currentMode)] / 1000.0, 1);
-  lcd.print("s)");
-
-  lcd.setCursor(0, 2);
-  lcd.print("Selanjutnya ");
-  lcd.print(getModeString(nextMode));
-  lcd.print(": ");
-  lcd.print(modeTimes[getModeIndex(nextMode)] / 1000.0, 1);
-  lcd.print("");
-
-  update7Segment(nextMode);
-}
-
-// ------------------ Mode ------------------
-
-void determineNextMode()
-{
-  int index = getModeIndex(currentMode);
-  for (int i = 1; i <= TOTAL_MODES; i++)
-  {
-    int nextIndex = (index + i) % TOTAL_MODES;
-    if (modeTimes[nextIndex] > 0)
-    {
-      nextMode = (SystemMode)(nextIndex + 1);
-      return;
-    }
-  }
-  nextMode = currentMode;
-}
-
-void startMode(SystemMode mode)
-{
-  // Jika terkunci, jangan mulai mode
-  if (systemLocked)
-    return;
-
-  modeJustFinished = false; // CRITICAL: Clear flag ketika start mode baru
   currentMode = mode;
   systemRunning = true;
-  determineNextMode();
-  int index = getModeIndex(mode);
-  interval = (index >= 0 && index < TOTAL_MODES) ? modeTimes[index] : 0;
-  if (interval > 0)
-  {
-    // CRITICAL: Clear timeout tracking before starting relay
+  nextMode = findNextActiveMode(currentMode);
+  if (selectedNextMode == MODE_IDLE) selectedNextMode = nextMode;
+  interval = modeTimes[idx];
+  if (interval > 0) {
     relayTimeoutTriggered = false;
-    relayOnStartTime = 0; // Will be set in setRelay()
-
-    setRelay(true); // Gunakan fungsi setRelay yang aman - will set relayOnStartTime
+    relayOnStartTime = 0;
+    setRelay(true);
     previousMillis = millis();
-    displayInitialized = false;
-    updateRunningDisplay();
-  }
-  else
-  {
+    showAllModeTimes();
+    autoPageToMarkedMode();
+    serialLogModeStart(currentMode);
+  } else {
     systemRunning = false;
   }
 }
 
-void runSystem()
-{
-  unsigned long currentMillis = millis();
-
-  // Safety check: interval should be valid
-  if (interval <= 0)
-  {
-    // Invalid interval - immediately stop system
-    noInterrupts();
-    digitalWrite(relayPin, HIGH); // Force OFF
-    relayState = false;
-    relayOnStartTime = 0;
-    interrupts();
+void runSystem() {
+  unsigned long now = millis();
+  if (interval <= 0) {
+    noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts();
     systemRunning = false;
-    modeJustFinished = true; // Signal untuk return ke menu
+    selectedNextMode = nextMode;
+    showAllModeTimes();
+    autoPageToMarkedMode();
+    update7Segment(selectedNextMode);
+    serialLogModeFinish(currentMode);
     return;
   }
-
-  if (safeMillisDiff(currentMillis, previousMillis) >= interval)
-  {
-    // CRITICAL FIX: Sequence for safe relay OFF
-    // Mode selesai => matikan relay dengan TRIPLE confirmation
-
-    // Step 1: Direct hardware OFF dengan interrupt protection
-    noInterrupts();
-    digitalWrite(relayPin, HIGH); // Direct pin write = OFF (LOW untuk ON, HIGH untuk OFF)
-    relayState = false;
-    relayOnStartTime = 0; // CLEAR timeout tracking
-    relayTimeoutTriggered = false;
-    lastRelayChange = millis();
-    interrupts();
-
-    // Step 2: Verify relay OFF dengan read
-    if (digitalRead(relayPin) != HIGH)
-    {
-      // If read back tidak match, force again immediately
-      noInterrupts();
-      digitalWrite(relayPin, HIGH);
-      relayState = false;
-      interrupts();
-    }
-
-    // Step 3: Call setRelay untuk state synchronization
+  if (safeMillisDiff(now, previousMillis) >= interval) {
+    noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; relayTimeoutTriggered=false; lastRelayChange=millis(); interrupts();
     setRelay(false);
-
     systemRunning = false;
-    modeJustFinished = true;
-    currentMode = MODE_IDLE;    // CRITICAL: Reset untuk bisa select mode baru
-    displayInitialized = false; // Allow LCD refresh
-
-    showModeComplete();
-    update7Segment(nextMode);
-  }
-  else
-  {
-    updateRunningDisplay(); // Update tampilan setiap loop
+    selectedNextMode = nextMode;
+    showAllModeTimes();
+    autoPageToMarkedMode();
+    update7Segment(selectedNextMode);
+    serialLogModeFinish(currentMode);
   }
 }
 
-// ======================== RESET SYSTEM STATE FUNCTION ========================
-
-/*
- * RESET SYSTEM TO INITIAL STATE:
- * ==============================
- * Resets all system variables to startup condition
- * Does NOT reset EEPROM data or boot counter
- * Returns system to main menu state
- *
- * SAFETY: Force relay OFF immediately without ratelimit blocking
- */
-void resetSystemState()
-{
-  // CRITICAL: Force relay OFF immediately for safety
-  // Bypass ratelimit untuk emergency case
-  noInterrupts();
-  digitalWrite(relayPin, HIGH); // Force HIGH (OFF)
-  relayState = false;
-  relayOnStartTime = 0; // CLEAR timeout tracking
-  relayTimeoutTriggered = false;
-  lastRelayChange = millis();
-  interrupts();
-
-  // Stop all active timers and operations
-  systemRunning = false;
-  modeJustFinished = false;
-  currentMode = MODE_IDLE;
-  nextMode = MODE_IDLE;
-
-  // Clear input mode flags
-  inputMode = false;
-  waitingForTime = false;
-  inputValue = "";
-  tempValue = 0;
-
-  // Reset display state
-  displayInitialized = false;
-
-  // Reset switch state
-  switchPressed = false;
-  switchState = HIGH;
-  lastSwitchState = HIGH;
-
-  // Reset emergency stop counters
-  emergencyStopPressCount = 0;
-
-  // CRITICAL FIX: Do NOT call lcd.init() - causes corruption
-  // Serial output disabled for stability
-
-  delay(20); // Small delay for system stabilization
-  lcd.clear();
-  delay(10);
-  lcd.setCursor(0, 1);
-  lcd.print("  SISTEM DIRESET");
-  lcd.setCursor(1, 2);
-  lcd.print("Kembali ke Menu");
+void resetSystemState() {
+  noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; relayTimeoutTriggered=false; lastRelayChange=millis(); interrupts();
+  systemRunning=false; currentMode=MODE_IDLE; nextMode=MODE_IDLE;
+  inputMode=false; waitingForTime=false; inputValue=""; tempValue=0;
+  switchPressed=false; switchState=HIGH; lastSwitchState=HIGH;
+  updateSelectedNextMode();
+  delay(20); lcd.clear(); delay(10);
+  lcd.setCursor(0,1); lcd.print("  SISTEM DIRESET");
+  lcd.setCursor(1,2); lcd.print("Kembali ke Menu");
   delay(300);
-
-  // Return to main screen
-  showMainScreen();
+  showAllModeTimes();
+  autoPageToMarkedMode();
   updateIdleDisplay();
+  Serial.println("[RESET] Sistem state di-reset (bukan reset EEPROM).");
 }
 
-// ======================== EMERGENCY STOP HANDLER ========================
-
-/*
- * CHECK EMERGENCY STOP STATUS - LOCK & RESET SYSTEM:
- * ==================================================
- * Monitors PIN 51 untuk detect emergency stop button press
- * Executes immediately without waiting untuk other operations
- * PRIMARY SAFETY FUNCTION - executed FIRST in every loop iteration
- *
- * TWO-STAGE OPERATION:
- * • First Press (Button DOWN → LOW): Locks all functions immediately
- *   - Relay turns OFF
- *   - All timers stop
- *   - LCD displays EMERGENCY message
- *   - System waits untuk second press
- *
- * • Second Press (Button DOWN again while locked): Reset to initial state
- *   - Clear all flags and counters
- *   - Return to main menu
- *   - Resume normal operation
- *
- * Features:
- * • Debouncing: 50ms untuk eliminate false triggers
- * • Non-blocking: Checks pin every loop without delay
- * • Immediate action: Shuts down relay instantly when triggered
- * • State tracking: Tracks whether emergency stop is active
- * • Display feedback: Shows emergency stop status + reset instructions
- *
- * Safety Behavior:
- * • Works even if system is locked
- * • Works even during mode execution
- * • Cannot be cancelled by keypad input
- * • Relay remains OFF until reset occurs
- */
-void checkEmergencyStop()
-{
-  // Baca pin emergency stop (LOW = tombol ditekan, HIGH = normal)
+void checkEmergencyStop() {
   int reading = digitalRead(emergencyStopPin);
-
-  // ===== CRITICAL: IMMEDIATE SAFETY CHECK (NO DEBOUNCE) =====
-  // If emergency stop active dan pin is LOW (pressed), force OFF relay IMMEDIATELY
-  // This is separate from debounce logic untuk respond instantly
-  if (emergencyStopActive && reading == LOW)
-  {
-    // Maintain relay OFF status saat emergency active
-    if (relayState)
-    {
-      noInterrupts();
-      digitalWrite(relayPin, HIGH); // Force OFF immediately
-      relayState = false;
-      relayOnStartTime = 0;
-      interrupts();
-    }
-    // Don't return yet - let debounce logic handle reset detection
+  if (emergencyStopActive && reading==LOW) {
+    if (relayState) { noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; interrupts(); }
   }
-
-  // Debouncing logic: hanya register perubahan setelah delay 50ms
-  if (reading != lastEmergencyStopState)
-  {
-    lastEmergencyStopTime = millis();
-  }
-
-  // Validasi perubahan state setelah debounce delay
-  if (safeMillisDiff(millis(), lastEmergencyStopTime) > emergencyStopDebounce)
-  {
-    if (reading != emergencyStopState)
-    {
+  if (reading != lastEmergencyStopState) lastEmergencyStopTime = millis();
+  if (safeMillisDiff(millis(), lastEmergencyStopTime) > emergencyStopDebounce) {
+    if (reading != emergencyStopState) {
       emergencyStopState = reading;
-
-      // EMERGENCY STOP BUTTON PRESSED (LOW = ditekan)
-      if (emergencyStopState == LOW)
-      {
-        // Jika sudah dalam emergency state dan button ditekan lagi = RESET
-        if (emergencyStopActive)
-        {
-          // SECOND PRESS - TRIGGER RESET KE INITIAL STATE
-          // Serial output removed for stability
-          // resetSystemState() handles display and relay OFF
-
-          // Reset system ke state awal
+      if (emergencyStopState == LOW) {
+        if (emergencyStopActive) {
           resetSystemState();
-
-          // Clear emergency stop flag
           emergencyStopActive = false;
-          emergencyStopPressCount = 0;
-        }
-        else
-        {
-          // FIRST PRESS - ACTIVATE EMERGENCY LOCK
+          serialLogEmergencyStop(false);
+        } else {
           emergencyStopActive = true;
-          systemRunning = false; // Stop system immediately
-
-          // CRITICAL: Force relay OFF immediately without ratelimit
-          noInterrupts();
-          digitalWrite(relayPin, HIGH); // Force HIGH (OFF)
-          relayState = false;
-          relayOnStartTime = 0; // CLEAR timeout tracking immediately
-          relayTimeoutTriggered = false;
-          lastRelayChange = millis();
-          interrupts();
-
-          displayInitialized = false; // Force LCD update
-
-          // Display emergency lock message
+          systemRunning = false;
+          noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; relayTimeoutTriggered=false; interrupts();
           lcd.clear();
-          lcd.setCursor(1, 0);
-          lcd.print("!!!EMERGENCY STOP!!!");
-          lcd.setCursor(0, 1);
-          lcd.print("SEMUA FUNGSI DIKUNCI");
-          lcd.setCursor(0, 2);
-          lcd.print("Press Tombol B Lagi");
-          lcd.setCursor(4, 3);
-          lcd.print("Untuk RESET");
-
-          // Clear 7-segment display sebagai indikator emergency
-          uint8_t seg[4] = {0x00, 0x00, 0x00, 0x00};
-          display.setSegments(seg);
-
-          // Log ke serial removed for stability - Serial output disable for production
-          // Uncomment below only for debugging
-          // Serial.println(F("  !!! EMERGENCY STOP ACTIVATED !!!"));
+          lcd.setCursor(1,0); lcd.print("!!!EMERGENCY STOP!!!");
+          lcd.setCursor(0,1); lcd.print("SEMUA FUNGSI DIKUNCI");
+          lcd.setCursor(0,2); lcd.print("Press Tombol B Lagi");
+          lcd.setCursor(4,3); lcd.print("Untuk RESET");
+          uint8_t blank[4]={0,0,0,0}; display.setSegments(blank);
+          serialLogEmergencyStop(true);
         }
       }
     }
   }
-
-  // Update last state untuk next iteration
   lastEmergencyStopState = reading;
 }
 
-void readSwitch()
-{
-  // Jika terkunci, ignore switch
-  if (systemLocked)
-    return;
-
-  // Baca switch langsung tanpa interrupt blocking untuk responsivitas maksimal
+void readSwitch() {
+  if (systemLocked) return;
   int reading = digitalRead(switchPin);
-
-  // Mode switch konstan - langsung eksekusi tanpa debounce
-  if (constantSwitchMode)
-  {
-    if (reading == LOW && !switchPressed)
-    {
-      switchPressed = true;
-      switchPressTime = millis();
-
-      // Eksekusi aksi switch langsung
-      if (!systemRunning && currentMode == MODE_IDLE && systemStable)
-      {
-        for (int i = 0; i < TOTAL_MODES; i++)
-        {
-          if (modeTimes[i] > 0)
-          {
-            startMode((SystemMode)(i + 1));
-            break;
-          }
-        }
-      }
-      else if (!systemRunning && modeJustFinished && systemStable)
-      {
-        startMode(nextMode);
-        modeJustFinished = false;
-      }
-    }
-    else if (reading == HIGH)
-    {
-      switchPressed = false;
-    }
-    return; // Skip debounce logic untuk mode konstan
+  if (reading == LOW && !systemRunning && systemStable && !switchPressed) {
+    switchPressed = true; switchPressTime = millis();
+    if (selectedNextMode != MODE_IDLE) startMode(selectedNextMode);
+    else if (activeModeCount > 0) startMode((SystemMode)(activeModeIndices[0]+1));
+    return;
   }
-
-  // Mode normal dengan debounce
-  // CRITICAL NEW: Handle modeJustFinished immediately ketika switch pressed
-  // Ini penting karena debounce logic bisa miss state change saat display completion
-  if (reading == LOW && !systemRunning && modeJustFinished && systemStable && !switchPressed)
-  {
-    switchPressed = true;
-    switchPressTime = millis();
-    startMode(nextMode);
-    modeJustFinished = false;
-    return; // Exit immediate, jangan process debounce
-  }
-
-  if (reading != lastSwitchState)
-  {
-    lastDebounceTime = millis();
-  }
-
-  // Gunakan debounce yang lebih pendek untuk responsivitas
-  if (safeMillisDiff(millis(), lastDebounceTime) > debounceDelay)
-  {
-    if (reading != switchState)
-    {
+  if (reading != lastSwitchState) lastDebounceTime = millis();
+  if (safeMillisDiff(millis(), lastDebounceTime) > debounceDelay) {
+    if (reading != switchState) {
       switchState = reading;
-
-      // Jika switch ditekan (LOW)
-      if (switchState == LOW)
-      {
-        // Cek apakah sudah cukup waktu sejak aksi terakhir
-        if (!switchPressed || safeMillisDiff(millis(), switchPressTime) > switchHoldDelay)
-        {
-          switchPressed = true;
-          switchPressTime = millis();
-
-          // Eksekusi aksi switch
-          if (!systemRunning && currentMode == MODE_IDLE && systemStable)
-          {
-            // Mulai dari mode pertama yang ada waktu
-            for (int i = 0; i < TOTAL_MODES; i++)
-            {
-              if (modeTimes[i] > 0)
-              {
-                startMode((SystemMode)(i + 1));
-                break;
-              }
-            }
+      if (switchState == LOW) {
+        if (!switchPressed || safeMillisDiff(millis(), switchPressTime) > switchHoldDelay) {
+          switchPressed = true; switchPressTime = millis();
+          if (!systemRunning && systemStable) {
+            if (selectedNextMode != MODE_IDLE) startMode(selectedNextMode);
+            else if (activeModeCount > 0) startMode((SystemMode)(activeModeIndices[0]+1));
           }
-          // Note: modeJustFinished handled di atas dengan immediate check
         }
-      }
-      else
-      {
-        // Switch dilepas (HIGH)
-        switchPressed = false;
-      }
+      } else switchPressed = false;
     }
   }
-
   lastSwitchState = reading;
 }
 
-// ------------------ Input Keypad ------------------
-
-void handleKeypadInput(char key)
-{
-  // Jika sistem terkunci, ignore semua input
-  if (systemLocked)
-    return;
-
-  // Emergency stop dengan double asterisk untuk AC load
-  static unsigned long lastAsterisk = 0;
-  if (key == '*')
-  {
-    if (millis() - lastAsterisk < 1000)
-    { // Double * dalam 1 detik
-      emergencyStop();
+void handleKeypadInput(char key) {
+  if (systemLocked) return;
+  static unsigned long lastStar=0;
+  if (key=='*') {
+    if (millis()-lastStar < 1000) { emergencyStop(); return; }
+    lastStar = millis();
+  }
+  if (key=='*' && !inputMode) { resetAll(); return; }
+  
+  if (!inputMode && !systemRunning) {
+    if (key == 'A') {
+      selectPreviousMode();
       return;
     }
-    lastAsterisk = millis();
-  }
-
-  if (key == '*' && !inputMode)
-  {
-    // Reset ALL diperbolehkan hanya jika belum terkunci; tapi
-    // sesuai permintaan, setelah mencapai MAX_BOOTS only re-upload re-enable.
-    // Kita tetap izinkan reset RAM/modeTimes tetapi TIDAK mengurangi bootCount.
-    resetAll();
-  }
-  else if (key == 'D' && !inputMode)
-  {
-    scrollOffset = (scrollOffset + 1) % 2;
-    showAllModeTimes();
-  }
-  else if (key == 'C' && !inputMode)
-  {
-    columnOffset = (columnOffset + 1) % 2;
-    showAllModeTimes();
-  }
-  else if (key == 'B' && !inputMode)
-  {
-    // Toggle mode switch konstan
-    constantSwitchMode = !constantSwitchMode;
-    lcd.clear();
-    lcd.setCursor(2, 1);
-    lcd.print("Mode Switch:");
-    lcd.setCursor(3, 2);
-    if (constantSwitchMode)
-    {
-      lcd.print("KONSTAN ON");
+    if (key == 'B') {
+      selectNextMode();
+      return;
     }
-    else
-    {
-      lcd.print("NORMAL ON");
+    if (key == 'C') {
+      if (activeModeCount>0) {
+        int total = (activeModeCount+MODES_PER_PAGE-1)/MODES_PER_PAGE;
+        activeModePage = (activeModePage==0) ? total-1 : activeModePage-1;
+        showAllModeTimes();
+        Serial.print("[LCD] Halaman sebelumnya: ");
+        Serial.println(activeModePage+1);
+      }
+      return;
     }
-    delay(200);
-    showAllModeTimes();
+    if (key == 'D') {
+      if (activeModeCount>0) {
+        int total = (activeModeCount+MODES_PER_PAGE-1)/MODES_PER_PAGE;
+        activeModePage = (activeModePage+1) % total;
+        showAllModeTimes();
+        Serial.print("[LCD] Halaman berikutnya: ");
+        Serial.println(activeModePage+1);
+      }
+      return;
+    }
   }
-  else if (key == '#' && !inputMode)
-  {
-    inputMode = true;
-    inputValue = "";
+  
+  if (key=='#' && !inputMode) {
+    inputMode=true; inputValue="";
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("  Pilih Mode A1-D8");
-    lcd.setCursor(0, 2);
-    lcd.print("Pencet A,B,C atau D");
-    lcd.setCursor(0, 3);
-    lcd.print("lalu tekan 1-8");
+    lcd.setCursor(0,0); lcd.print("  Pilih Mode A1-D8");
+    lcd.setCursor(0,2); lcd.print("Pencet A,B,C atau D");
+    lcd.setCursor(0,3); lcd.print("lalu tekan 1-8");
+    serialLogInputStart();
+    return;
   }
-  else if (inputMode && !waitingForTime && key >= 'A' && key <= 'D')
-  {
+  if (inputMode && !waitingForTime && key>='A' && key<='D') {
     currentGroup = key;
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Grup: ");
-    lcd.print(currentGroup);
-    lcd.setCursor(0, 1);
-    lcd.print("Kemudian Tekan ");
-    lcd.setCursor(0, 2);
-    lcd.print(" 1,2,3,4,5,6,7,8");
+    lcd.setCursor(0,0); lcd.print("Grup: "); lcd.print(currentGroup);
+    lcd.setCursor(0,1); lcd.print("Kemudian Tekan ");
+    lcd.setCursor(0,2); lcd.print(" 1,2,3,4,5,6,7,8");
+    return;
   }
-  else if (inputMode && !waitingForTime && key >= '1' && key <= '8')
-  {
+  if (inputMode && !waitingForTime && key>='1' && key<='8') {
     int group = currentGroup - 'A';
-    int number = key - '1';
-    selectedModeToSet = (SystemMode)(group * 8 + number + 1);
+    int num = key - '1';
+    selectedModeToSet = (SystemMode)(group*8 + num + 1);
     waitingForTime = true;
-    inputValue = "";
-    tempValue = 0;
+    inputValue=""; tempValue=0;
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Input Set ");
-    lcd.print(getModeString(selectedModeToSet));
-    lcd.setCursor(0, 1);
-    lcd.print("Input dalam ms      Kemudian Tekan #");
+    lcd.setCursor(0,0); lcd.print("Input Set "); lcd.print(getModeString(selectedModeToSet));
+    lcd.setCursor(0,1); lcd.print("Input dalam ms      Kemudian Tekan #");
+    serialLogInputModeSelected(selectedModeToSet);
+    return;
   }
-  else if (waitingForTime && isdigit(key))
-  {
+  if (waitingForTime && isdigit(key)) {
     inputValue += key;
-    if (inputValue.length() > 5)
-      inputValue = inputValue.substring(0, 5);
+    if (inputValue.length()>5) inputValue = inputValue.substring(0,5);
     tempValue = inputValue.toInt();
-    lcd.setCursor(0, 2);
-    lcd.print(inputValue);
-    lcd.print(" ms  (");
-    lcd.print(tempValue / 1000.0, 1);
-    lcd.print("s)");
+    lcd.setCursor(0,2);
+    lcd.print(inputValue); lcd.print(" ms  (");
+    lcd.print(tempValue/1000.0,1); lcd.print("s)");
+    return;
   }
-  else if (waitingForTime && key == '#')
-  {
+  if (waitingForTime && key=='#') {
     saveInput();
   }
 }
 
-void saveInput()
-{
-  if (selectedModeToSet >= MODE_A1 && selectedModeToSet <= MODE_D8)
-  {
+void saveInput() {
+  if (selectedModeToSet >= MODE_A1 && selectedModeToSet <= MODE_D8) {
     modeTimes[getModeIndex(selectedModeToSet)] = tempValue;
-
-    // Simpan ke EEPROM agar tidak hilang saat dimatikan
     saveToEEPROM();
-
-    inputMode = false;
-    waitingForTime = false;
+    updateActiveModesList();
+    updateSelectedNextMode();
+    inputMode=false; waitingForTime=false;
     lcd.clear();
-    lcd.setCursor(0, 0);
+    lcd.setCursor(0,0);
     lcd.print(getModeString(selectedModeToSet));
-    lcd.print(" = ");
-    lcd.print(tempValue);
-    lcd.print("ms  (");
-    lcd.print(tempValue / 1000.0, 1);
-    lcd.print("s)");
-    lcd.setCursor(0, 2);
-    lcd.print(" Tersimpan Permanen");
+    lcd.print(" = "); lcd.print(tempValue); lcd.print("ms  (");
+    lcd.print(tempValue/1000.0,1); lcd.print("s)");
+    lcd.setCursor(0,2); lcd.print(" Tersimpan Permanen");
     delay(200);
     showAllModeTimes();
-  }
-  else
-  {
-    // Jika tidak memilih mode valid
+    autoPageToMarkedMode();
+    serialLogEepromSave(selectedModeToSet, tempValue);
+    serialPrintActiveModes();  // Cetak ulang daftar mode aktif
+  } else {
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("  Gagal Disimpan!");
-    lcd.setCursor(0, 2);
-    lcd.print("Silakan Ulangi lagi");
+    lcd.setCursor(0,0); lcd.print("  Gagal Disimpan!");
+    lcd.setCursor(0,2); lcd.print("Silakan Ulangi lagi");
     delay(200);
-
-    // Kembali ke tampilan input mode
-    inputMode = true;
-    waitingForTime = false;
-    inputValue = "";
+    inputMode=true; waitingForTime=false; inputValue="";
     lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("  Pilih Mode A1-D8");
-    lcd.setCursor(0, 2);
-    lcd.print("Pencet A,B,C atau D");
-    lcd.setCursor(0, 3);
-    lcd.print("lalu tekan 1-8");
+    lcd.setCursor(0,0); lcd.print("  Pilih Mode A1-D8");
+    lcd.setCursor(0,2); lcd.print("Pencet A,B,C atau D");
+    lcd.setCursor(0,3); lcd.print("lalu tekan 1-8");
+    Serial.println("[ERROR] Gagal menyimpan mode tidak valid.");
   }
 }
 
-// Fungsi untuk recovery dari interferensi AC - IMPROVED DENGAN RELAY TIMEOUT CLEAR
-void emergencyStop()
-{
+void emergencyStop() {
   noInterrupts();
-  digitalWrite(relayPin, HIGH); // Direct OFF
-  relayState = false;
-  relayOnStartTime = 0; // CLEAR timeout tracking
-  relayTimeoutTriggered = false;
-  systemRunning = false;
-  modeJustFinished = false;
-  systemStable = false;
-  errorCount++;
+  digitalWrite(relayPin, HIGH);
+  relayState=false; relayOnStartTime=0; relayTimeoutTriggered=false;
+  systemRunning=false; systemStable=false; errorCount++;
   interrupts();
-
-  delay(20); // Stabilization delay
-  lcd.clear();
-  delay(10);
-  lcd.setCursor(2, 1);
-  lcd.print("EMERGENCY STOP");
-  lcd.setCursor(2, 2);
-  lcd.print("Recovery Mode");
+  delay(20); lcd.clear(); delay(10);
+  lcd.setCursor(2,1); lcd.print("EMERGENCY STOP");
+  lcd.setCursor(2,2); lcd.print("Recovery Mode");
   delay(300);
-
-  // Reset system state
-  systemStable = true;
-  showMainScreen();
+  systemStable=true;
+  showAllModeTimes();
+  autoPageToMarkedMode();
+  Serial.println("[EMERGENCY] Stop darurat dipicu oleh tombol * tahan.");
 }
 
-void resetAll()
-{
-  // Jika terkunci, jangan izinkan reset (hanya reflash yang dapat meng-enable)
-  if (systemLocked)
-  {
-    lcd.clear();
-    lcd.setCursor(1, 1);
-    lcd.print("TIDAK DAPAT RESET");
-    lcd.setCursor(1, 2);
-    lcd.print("Sistem terkunci");
+void resetAll() {
+  if (systemLocked) {
+    lcd.clear(); lcd.setCursor(1,1); lcd.print("TIDAK DAPAT RESET");
+    lcd.setCursor(1,2); lcd.print("Sistem terkunci");
     delay(1500);
+    Serial.println("[ERROR] Reset ditolak karena sistem terkunci.");
     return;
   }
-
-  // Reset hanya modeTimes di RAM dan simpan ke EEPROM,
-  // tetapi bootCount tetap dipertahankan (sesuai permintaan).
-  for (int i = 0; i < TOTAL_MODES; i++)
-    modeTimes[i] = 0;
-
-  // Simpan modeTimes (bootCount tetap disimpan)
+  for (int i=0; i<TOTAL_MODES; i++) modeTimes[i]=0;
   saveToEEPROM();
-
-  inputMode = false;
-  waitingForTime = false;
-  currentMode = MODE_IDLE;
-  systemRunning = false;
-  modeJustFinished = false;
-
-  // Force relay OFF dengan clear timeout tracking
-  noInterrupts();
-  digitalWrite(relayPin, HIGH); // Force OFF
-  relayState = false;
-  relayOnStartTime = 0;
-  relayTimeoutTriggered = false;
-  interrupts();
-
-  setRelay(false); // Gunakan fungsi setRelay yang aman
+  updateActiveModesList();
+  updateSelectedNextMode();
+  inputMode=false; waitingForTime=false;
+  currentMode=MODE_IDLE; systemRunning=false;
+  noInterrupts(); digitalWrite(relayPin, HIGH); relayState=false; relayOnStartTime=0; relayTimeoutTriggered=false; interrupts();
+  setRelay(false);
   lcd.clear();
-  lcd.setCursor(2, 1);
-  lcd.print("Reset Permanen");
-  lcd.setCursor(1, 2);
-  lcd.print("Mode Times Dikosongkan");
-
-  // Tampilkan "rdy" di 7-segment setelah reset
-  uint8_t seg[4] = {0x50, 0x5E, 0x6E, 0x00}; // r-d-y
-  display.setSegments(seg);
-
+  lcd.setCursor(2,1); lcd.print("Reset Permanen");
+  lcd.setCursor(1,2); lcd.print("Mode Times Dikosongkan");
+  uint8_t rdy[4] = {0x50,0x5E,0x6E,0x00};
+  display.setSegments(rdy);
   delay(300);
-  showMainScreen();
+  showAllModeTimes();
+  serialLogSystemReset();
+  serialPrintActiveModes();  // Tampilkan bahwa semua mode kosong
 }
-
-// ================================================================
-// COMPREHENSIVE TECHNICAL DOCUMENTATION
-// ================================================================
-
-/*
- * TWISTING CONTROL MULTI-TIME SYSTEM - COMPLETE TECHNICAL MANUAL
- * ===============================================================
- *
- * SYSTEM OVERVIEW:
- * ================
- * Professional-grade 32-mode twisting control system dengan advanced
- * security features dan industrial-strength reliability.
- *
- * Key Capabilities:
- * • 32 Independent Timer Modes (A1-A8, B1-B8, C1-C8, D1-D8)
- * • Boot Counter Security (7000-cycle equipment protection)
- * • EEPROM Persistent Storage dengan data validation
- * • Dual Display System (20x4 LCD + 4-digit 7-segment)
- * • Industrial EMI Protection dengan advanced debouncing
- * • Scrolling Interface untuk comprehensive mode access
- * • Real-time System Diagnostics dengan error tracking
- *
- * HARDWARE ARCHITECTURE:
- * ======================
- *
- * Microcontroller: Arduino Mega 2560 (required)
- * • Flash Memory: 256KB (program storage)
- * • SRAM: 8KB (runtime variables)
- * • EEPROM: 4KB (persistent data storage)
- * • Digital I/O: 54 pins (extensive I/O untuk all interfaces)
- * • PWM Outputs: 15 pins (relay control capability)
- * • Analog Inputs: 16 pins (future expansion)
- * • Clock Speed: 16MHz (precise timing resolution)
- *
- * Display System Architecture:
- * • Primary Display: LCD 20x4 I2C (comprehensive status)
- * • Secondary Display: TM1637 4-digit 7-segment (timing)
- * • Interface: I2C protocol untuk LCD, digital pins untuk TM1637
- * • Backlight: Automatic brightness control
- * • Scrolling: Dynamic navigation untuk 32 modes
- *
- * Input System Architecture:
- * • Primary Input: 4x4 Matrix Keypad (mode selection)
- * • Secondary Input: SPST Switch (manual control)
- * • Debouncing: 10ms advanced filtering
- * • EMI Protection: Industrial-grade noise rejection
- * • Response Time: <50ms typical
- *
- * Output System Architecture:
- * • Relay Control: SPST relay (10A capability)
- * • Protection: Flyback diode untuk inductive loads
- * • State Tracking: Comprehensive relay diagnostics
- * • Control Logic: 5V TTL compatible
- *
- * TIMING SYSTEM SPECIFICATIONS:
- * =============================
- *
- * Timer Resolution: 1 second precision
- * • Minimum Time: 1 second
- * • Maximum Time: 9999 seconds (2.77 hours)
- * • Accuracy: ±0.01% at room temperature
- * • Stability: Crystal oscillator dependent
- * • Non-blocking: Responsive interface during timing
- *
- * Mode Organization:
- * • Total Modes: 32 independent timers
- * • Group Structure: 4 groups × 8 modes each
- * • Group A (A1-A8): Light duty applications
- * • Group B (B1-B8): Medium duty applications
- * • Group C (C1-C8): Heavy duty applications
- * • Group D (D1-D8): Special/Custom applications
- *
- * Storage System:
- * • Technology: EEPROM non-volatile memory
- * • Capacity: 4KB total (sufficient untuk all data)
- * • Write Endurance: 100,000 cycles per location
- * • Data Retention: 100+ years at room temperature
- * • Validation: Magic number integrity checking
- *
- * SECURITY SYSTEM SPECIFICATIONS:
- * ===============================
- *
- * Boot Counter Protection:
- * • Purpose: Equipment lifecycle management
- * • Limit: 7000 boot cycles maximum
- * • Storage: EEPROM persistent counter
- * • Enforcement: Hard system lock saat limit reached
- * • Recovery: Firmware re-flash required
- *
- * Data Protection:
- * • Magic Number: 0x1234 validation marker
- * • Corruption Detection: Automatic validation
- * • Recovery: Auto-initialization jika corruption detected
- * • Backup: Manual backup procedures available
- *
- * Access Control:
- * • Operator Level: Mode selection dan time setting
- * • Supervisor Level: System reset dan diagnostics
- * • Administrator Level: Firmware updates dan unlock
- *
- * PERFORMANCE SPECIFICATIONS:
- * ===========================
- *
- * Response Times:
- * • Keypad Response: <50ms from press ke action
- * • Display Update: <100ms untuk screen refresh
- * • Mode Switch: <200ms untuk complete transition
- * • Relay Activation: <10ms from command ke output
- *
- * Accuracy:
- * • Timing Precision: ±1 second over 24 hours
- * • Temperature Stability: ±0.01%/°C
- * • Long-term Drift: <1 second/month
- * • Repeatability: >99.99% consistency
- *
- * Environmental:
- * • Operating Temperature: 0°C to +50°C
- * • Storage Temperature: -20°C to +70°C
- * • Humidity: 10% to 90% RH non-condensing
- * • Altitude: Sea level to 2000m
- * • EMC: Industrial environment compatible
- *
- * Power Requirements:
- * • Input Voltage: 7-12V DC (9V recommended)
- * • Current Consumption: 200mA typical, 500mA maximum
- * • Relay Load: Up to 10A @ 250VAC additional
- * • Backup: EEPROM data preserved without power
- *
- * OPERATIONAL PROCEDURES:
- * =======================
- *
- * Normal Operation Sequence:
- * 1. System Startup & Boot Counter Check
- * 2. Display Initialization & Self-Test
- * 3. EEPROM Data Recovery & Validation
- * 4. Main Interface Display
- * 5. Mode Selection via Keypad
- * 6. Time Setting & Confirmation
- * 7. Timer Execution & Monitoring
- * 8. Completion & Return to Main Screen
- *
- * Mode Selection Procedure:
- * 1. Press Group Key (A, B, C, atau D)
- * 2. Press Mode Number (1-8)
- * 3. Enter Time Value (1-9999 seconds)
- * 4. Press # untuk Confirm
- * 5. System stores setting ke EEPROM
- * 6. Ready untuk execution
- *
- * Timer Execution Procedure:
- * 1. Select desired mode dari main screen
- * 2. Press switch untuk start timing
- * 3. Monitor progress pada displays
- * 4. Relay activates during timing period
- * 5. Audio/visual notification saat completion
- * 6. System returns ke idle state
- *
- * MAINTENANCE PROCEDURES:
- * =======================
- *
- * Daily Maintenance:
- * • Visual inspection of all displays
- * • Keypad response verification
- * • Switch operation check
- * • Relay activation test
- * • Boot counter monitoring
- *
- * Weekly Maintenance:
- * • Comprehensive system diagnostic
- * • Timing accuracy verification
- * • EEPROM data integrity check
- * • Environmental condition monitoring
- * • Performance benchmark testing
- *
- * Monthly Maintenance:
- * • Complete system calibration
- * • Component aging assessment
- * • EMI protection effectiveness check
- * • Documentation update
- * • Backup procedures execution
- *
- * Boot Counter Management:
- * • Monitor via diagnostic mode
- * • Plan firmware updates before limit
- * • Document reset events
- * • Coordinate dengan maintenance schedules
- *
- * TROUBLESHOOTING GUIDE:
- * ======================
- *
- * Problem: LCD display blank atau corrupted
- * Solutions:
- * • Check I2C connections (SDA pin 20, SCL pin 21)
- * • Verify power supply voltage (5V ±0.25V)
- * • Test I2C address dengan scanner
- * • Check for loose connections
- * • Replace LCD module jika hardware failure
- * • Verify library installation
- *
- * Problem: TM1637 display not working
- * Solutions:
- * • Check CLK connection (pin 4)
- * • Verify DIO connection (pin 5)
- * • Test dengan simple display code
- * • Check solder joints
- * • Verify power connections
- * • Replace TM1637 module jika faulty
- *
- * Problem: Keypad tidak responsive
- * Solutions:
- * • Check all 8 pin connections (pins 22,24,26,28,30,32,34,36)
- * • Test keypad dengan multimeter
- * • Verify Keypad library installation
- * • Check for EMI interference
- * • Clean keypad contacts
- * • Replace keypad jika mechanical failure
- *
- * Problem: System locked (boot limit reached)
- * Solutions:
- * • Confirm boot count via diagnostic
- * • Prepare untuk firmware re-flash
- * • Backup current mode settings
- * • Upload fresh firmware
- * • Restore mode settings
- * • Document unlock event
- *
- * Problem: Timing inaccuracy
- * Solutions:
- * • Check crystal oscillator
- * • Verify power supply stability
- * • Monitor temperature effects
- * • Calibrate dengan precision reference
- * • Check untuk code blocking delays
- * • Replace Arduino jika timing circuit damaged
- *
- * Problem: EEPROM data corruption
- * Solutions:
- * • Check magic number validation
- * • Perform complete system reset
- * • Re-enter all mode settings
- * • Monitor untuk repeated corruption
- * • Replace Arduino jika EEPROM damaged
- * • Implement regular backup procedures
- *
- * Problem: Relay tidak activate
- * Solutions:
- * • Check relay pin connection (pin 2)
- * • Verify relay module power
- * • Test dengan multimeter
- * • Check flyback diode
- * • Verify control logic levels
- * • Replace relay module jika faulty
- *
- * Problem: Switch debouncing issues
- * Solutions:
- * • Adjust debounceDelay constant
- * • Check switch mechanical condition
- * • Verify pull-up resistor
- * • Add external RC filter jika necessary
- * • Replace switch jika contacts worn
- * • Monitor untuk EMI interference
- *
- * ADVANCED DIAGNOSTICS:
- * =====================
- *
- * System Health Monitoring:
- * • Boot counter tracking
- * • Error count analysis
- * • Performance benchmarking
- * • Memory usage monitoring
- * • Power consumption analysis
- *
- * Data Integrity Checking:
- * • Magic number validation
- * • EEPROM checksum verification
- * • Mode setting consistency
- * • Counter validation
- * • Backup data comparison
- *
- * Performance Analysis:
- * • Timing accuracy measurement
- * • Response time profiling
- * • Display update monitoring
- * • Memory fragmentation analysis
- * • System stability assessment
- *
- * FUTURE ENHANCEMENTS:
- * ====================
- *
- * Hardware Upgrades:
- * • Ethernet connectivity untuk remote monitoring
- * • SD card logging untuk comprehensive data
- * • RTC module untuk timestamp accuracy
- * • Temperature sensor untuk environmental monitoring
- * • Backup battery untuk SRAM protection
- * • Touchscreen interface untuk advanced UI
- *
- * Software Features:
- * • Recipe management system
- * • Statistical process control
- * • Trend analysis capabilities
- * • Alarm system untuk maintenance
- * • Multi-language support
- * • Database integration
- *
- * Communication Features:
- * • Modbus RTU protocol
- * • Ethernet/IP connectivity
- * • MQTT IoT integration
- * • Web interface untuk remote access
- * • Mobile app connectivity
- * • Cloud data synchronization
- *
- * Security Enhancements:
- * • User authentication system
- * • Encrypted data storage
- * • Audit trail logging
- * • Remote access control
- * • Certificate-based security
- * • Intrusion detection
- *
- * TECHNICAL SUPPORT:
- * ==================
- *
- * Documentation:
- * • Complete wiring diagrams
- * • Schematic drawings
- * • PCB layout files
- * • Component specifications
- * • Installation procedures
- * • Calibration protocols
- *
- * Training:
- * • Operator certification program
- * • Maintenance technician training
- * • Advanced troubleshooting course
- * • System integration workshop
- * • Safety procedures training
- * • Emergency response protocols
- *
- * Support Services:
- * • Remote diagnostic capability
- * • On-site technical support
- * • Emergency repair services
- * • Spare parts availability
- * • Firmware update services
- * • System upgrade consultation
- *
- * Contact Information:
- * • Technical Support: AGUS FITRIYANTO Engineering
- * • Email: [technical support email]
- * • Phone: [technical support phone]
- * • Website: https://github.com/sembre/
- * • Documentation: Complete technical manual
- * • Training: Certification programs available
- *
- * WARRANTY & SERVICE:
- * ===================
- *
- * Hardware Warranty:
- * • Arduino Mega: 2 years manufacturer warranty
- * • Display Modules: 1 year replacement warranty
- * • Keypad: 1 year mechanical warranty
- * • Relay Module: 6 months electrical warranty
- * • Interconnect Cables: 90 days replacement
- *
- * Software Support:
- * • Firmware Updates: Lifetime support
- * • Bug Fixes: Priority resolution
- * • Feature Enhancements: Quarterly releases
- * • Technical Documentation: Continuous updates
- * • Online Support: 24/7 knowledge base
- *
- * Service Contracts:
- * • Preventive Maintenance: Annual contracts available
- * • Emergency Support: 24/7 response options
- * • Training Services: Ongoing education programs
- * • Calibration Services: Annual accuracy verification
- * • Upgrade Services: Hardware/software modernization
- *
- */

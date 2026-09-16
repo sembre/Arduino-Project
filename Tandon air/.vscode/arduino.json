@@ -1,0 +1,8 @@
+{
+    "configuration": "JTAGAdapter=default,PSRAM=disabled,FlashMode=qio,FlashSize=4M,LoopCore=1,EventsCore=1,USBMode=hwcdc,CDCOnBoot=default,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,PartitionScheme=default_8MB,CPUFreq=240,UploadSpeed=512000,DebugLevel=none,EraseFlash=none,ZigbeeMode=default",
+    "board": "esp32:esp32:esp32s3",
+    "port": "COM6",
+    "programmer": "esptool",
+    "sketch": "tandon_air\\tandon_air.ino",
+    "output": "build"
+}

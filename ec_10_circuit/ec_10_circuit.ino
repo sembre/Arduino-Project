@@ -33,8 +33,8 @@ const unsigned long PASS_TIMER_INTERVAL = 30; // Interval timer (tidak digunakan
 
 const int EEPROM_PASS_ADDR = 0;           // Alamat EEPROM untuk pass counter (4 bytes)
 const int EEPROM_MAGIC_ADDR = 8;          // Alamat EEPROM untuk magic key (4 bytes)
-const long MAGIC_KEY = 0x12345678L;       // Magic key untuk deteksi upload ulang
-const long RESET_MAGIC_KEY = 0x87654321L; // Magic key khusus untuk reset
+const long MAGIC_KEY = 0x87654321;       // Magic key untuk deteksi upload ulang
+const long RESET_MAGIC_KEY = 0x12345678; // Magic key khusus untuk reset
 // pins SIDE A , SIDE B
 int endA[10] = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31}; // pins end A 15CZ-6Y No 15,... ,
 int endB[10] = {63, 62, 61, 60, 59, 58, 57, 56, 55, 54}; // pins end B 15CZ-6H No 1,... ,
