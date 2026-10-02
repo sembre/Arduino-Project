@@ -4,23 +4,35 @@
 
 #define LCD_Backlight 4
 
-// EEPROM
+// EEPROM (menyimpan target terakhir yang dikunci dengan #)
 #define EEPROM_ADDR_TARGET_TURNS 0
 #define EEPROM_ADDR_VALID_FLAG   2
 #define EEPROM_VALID_VALUE       170
 
+// Target putaran default: dipakai jika belum ada nilai tersimpan & setelah reset
+#define DEFAULT_TURNS 20
+
 // Pin
 const int motorPin = A1;
 const int startButtonPin = 2;
-const int switchPin = 3;
+const int irSensorPin = 3;   // Sensor infrared (OUT modul IR) - pin interrupt INT1
+
+// Sensor Infrared
+// Modul IR umum (FC-51 / TCRT5000) output LOW saat mendeteksi objek.
+// Jika sensor Anda output HIGH saat mendeteksi, ganti menjadi HIGH.
+#define IR_ACTIVE_LEVEL     LOW
+// Jeda minimum antar hitungan (ms) untuk menyaring kedip/noise sensor.
+// Harus lebih kecil dari waktu 1 putaran motor.
+#define IR_MIN_INTERVAL_MS  30
 
 // Variabel
-int count = 0;
-int targetTurns = 0;
-bool motorRunning = false;
+volatile int count = 0;
+volatile int targetTurns = 0;
+volatile bool motorRunning = false;
 bool keypadLocked = false;
-bool switchState = HIGH;
-bool switchPressed = false;
+volatile unsigned long lastIrPulse = 0;
+int lastShownCount = -1;
+bool showingDefault = false;   // true = angka di LCD masih nilai default, digit pertama menggantinya
 
 unsigned long lastButtonPress = 0;
 const unsigned long buttonDebounceDelay = 23;
@@ -48,7 +60,9 @@ void setup()
 {
   pinMode(motorPin, OUTPUT);
   pinMode(startButtonPin, INPUT_PULLUP);
-  pinMode(switchPin, INPUT_PULLUP);
+  pinMode(irSensorPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(irSensorPin), irSensorISR,
+                  IR_ACTIVE_LEVEL == LOW ? FALLING : RISING);
 
   analogWrite(LCD_Backlight, 100);
 
@@ -66,25 +80,16 @@ void setup()
   delay(3000);
   lcd.clear();
 
-  // Load EEPROM
+  // Setiap dinyalakan langsung pakai target terakhir (atau default) & terkunci
   loadFromEEPROM();
+  keypadLocked = true; // 🔒 AUTO LOCK
 
   lcd.setCursor(0,0);
   lcd.print("Set Turns:");
-
-  if (targetTurns > 0)
-  {
-    keypadLocked = true; // 🔒 AUTO LOCK
-    lcd.setCursor(11,0);
-    lcd.print(targetTurns);
-    lcd.setCursor(0,1);
-    lcd.print("Ready - Press ▶ ");
-  }
-  else
-  {
-    lcd.setCursor(0,1);
-    lcd.print("Input & Lock # ");
-  }
+  lcd.setCursor(11,0);
+  lcd.print(targetTurns);
+  lcd.setCursor(0,1);
+  lcd.print("Ready - Press ▶ ");
 
   Serial.begin(9600);
 }
@@ -112,38 +117,25 @@ void loop()
     }
   }
 
-  // SWITCH COUNTER
-  bool currentSwitchState = digitalRead(switchPin);
+  // IR SENSOR COUNTER (hitungan dilakukan di interrupt irSensorISR)
+  noInterrupts();
+  int currentCount = count;
+  bool running = motorRunning;
+  interrupts();
 
-  if (motorRunning)
+  if (currentCount != lastShownCount && lastShownCount >= 0)
   {
-    if (switchState == HIGH && currentSwitchState == LOW && !switchPressed)
+    lastShownCount = currentCount;
+    lcd.setCursor(0,1);
+    lcd.print("Turns: ");
+    lcd.print(currentCount);
+    lcd.print("      ");
+
+    if (!running)   // target tercapai, motor sudah dimatikan di ISR
     {
-      delay(25);
-      if (digitalRead(switchPin) == LOW)
-      {
-        switchPressed = true;
-        count++;
-
-        lcd.setCursor(0,1);
-        lcd.print("Turns: ");
-        lcd.print(count);
-        lcd.print("      ");
-
-        if (count >= targetTurns)
-        {
-          stopMotor();
-        }
-      }
-    }
-
-    if (currentSwitchState == HIGH)
-    {
-      switchPressed = false;
+      stopMotor();
     }
   }
-
-  switchState = currentSwitchState;
 
   // KEYPAD
   char key = keypad.getKey();
@@ -153,17 +145,20 @@ void loop()
     // RESET TOTAL
     if (key == '*')
     {
-      clearEEPROM();
-      targetTurns = 0;
-      keypadLocked = false;
       motorRunning = false;
       digitalWrite(motorPin, LOW);
+      lastShownCount = -1;
+      targetTurns = DEFAULT_TURNS;
+      showingDefault = true;
+      keypadLocked = false;
 
       lcd.clear();
       lcd.print("Reset Complete ");
       delay(1500);
       lcd.clear();
       lcd.print("Set Turns:");
+      lcd.setCursor(11,0);
+      lcd.print(targetTurns);
       lcd.setCursor(0,1);
       lcd.print("Input & Lock # ");
       return;
@@ -173,14 +168,19 @@ void loop()
     {
       if (key >= '0' && key <= '9')
       {
-        if (targetTurns <= 9999)
+        if (showingDefault)   // digit pertama menimpa nilai default
+        {
+          targetTurns = 0;
+          showingDefault = false;
+        }
+
+        if (targetTurns <= 999)   // maksimal 4 digit (9999)
         {
           targetTurns = targetTurns * 10 + (key - '0');
           lcd.setCursor(11,0);
           lcd.print("    ");
           lcd.setCursor(11,0);
           lcd.print(targetTurns);
-          saveToEEPROM(targetTurns);
         }
       }
 
@@ -197,6 +197,7 @@ void loop()
 
       else if (key == 'D')
       {
+        showingDefault = false;
         targetTurns /= 10;
         lcd.setCursor(11,0);
         lcd.print("    ");
@@ -205,7 +206,6 @@ void loop()
           lcd.setCursor(11,0);
           lcd.print(targetTurns);
         }
-        saveToEEPROM(targetTurns);
       }
     }
   }
@@ -214,11 +214,14 @@ void loop()
 // ========================== MOTOR ==========================
 void startMotor()
 {
-  digitalWrite(motorPin, HIGH);
-  motorRunning = true;
+  noInterrupts();
   count = 0;
-  switchPressed = false;
-  switchState = digitalRead(switchPin);
+  lastIrPulse = millis();
+  motorRunning = true;
+  interrupts();
+
+  lastShownCount = 0;
+  digitalWrite(motorPin, HIGH);
 
   lcd.setCursor(0,1);
   lcd.print("Turns: 0        ");
@@ -228,7 +231,7 @@ void stopMotor()
 {
   digitalWrite(motorPin, LOW);
   motorRunning = false;
-  switchPressed = false;
+  lastShownCount = -1;
 
   // 🔒 TETAP LOCK → PAKAI TARGET LAMA
   keypadLocked = true;
@@ -240,31 +243,44 @@ void stopMotor()
   lcd.print("Ready - Press ▶ ");
 }
 
+// ========================== SENSOR IR ==========================
+// Dipanggil otomatis setiap sensor IR mendeteksi objek (tepi sinyal),
+// sehingga tidak ada putaran yang terlewat walau LCD/keypad sedang sibuk.
+void irSensorISR()
+{
+  if (!motorRunning) return;
+
+  unsigned long now = millis();
+  if (now - lastIrPulse < IR_MIN_INTERVAL_MS) return;   // filter noise
+  lastIrPulse = now;
+
+  count++;
+  if (count >= targetTurns)
+  {
+    digitalWrite(motorPin, LOW);   // matikan motor secepatnya
+    motorRunning = false;
+  }
+}
+
 // ========================== EEPROM ==========================
+// EEPROM.update hanya menulis jika nilainya berubah (memperpanjang umur EEPROM)
 void saveToEEPROM(int value)
 {
-  EEPROM.write(EEPROM_ADDR_TARGET_TURNS, value & 0xFF);
-  EEPROM.write(EEPROM_ADDR_TARGET_TURNS + 1, (value >> 8) & 0xFF);
-  EEPROM.write(EEPROM_ADDR_VALID_FLAG, EEPROM_VALID_VALUE);
+  EEPROM.update(EEPROM_ADDR_TARGET_TURNS, value & 0xFF);
+  EEPROM.update(EEPROM_ADDR_TARGET_TURNS + 1, (value >> 8) & 0xFF);
+  EEPROM.update(EEPROM_ADDR_VALID_FLAG, EEPROM_VALID_VALUE);
 }
 
 void loadFromEEPROM()
 {
+  targetTurns = DEFAULT_TURNS;   // belum ada data → pakai default
+
   if (EEPROM.read(EEPROM_ADDR_VALID_FLAG) == EEPROM_VALID_VALUE)
   {
     int low = EEPROM.read(EEPROM_ADDR_TARGET_TURNS);
     int high = EEPROM.read(EEPROM_ADDR_TARGET_TURNS + 1);
-    targetTurns = (high << 8) | low;
-    if (targetTurns < 0 || targetTurns > 9999)
-      targetTurns = 0;
+    int saved = (high << 8) | low;
+    if (saved > 0 && saved <= 9999)
+      targetTurns = saved;
   }
-  else
-  {
-    targetTurns = 0;
-  }
-}
-
-void clearEEPROM()
-{
-  EEPROM.write(EEPROM_ADDR_VALID_FLAG, 0);
 }
