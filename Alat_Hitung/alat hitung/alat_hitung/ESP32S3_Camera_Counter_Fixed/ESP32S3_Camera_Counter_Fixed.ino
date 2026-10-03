@@ -68,6 +68,18 @@ static inline uint8_t rgb565_to_gray(uint16_t c)
     return (uint8_t)((R * 299 + G * 587 + B * 114) / 1000);
 }
 
+// Rata-rata kecerahan frame RGB565 (diagnosa: 0 = hitam total)
+static int frame_brightness(camera_fb_t *fb)
+{
+    uint32_t sum = 0, n = 0;
+    for (size_t i = 0; i + 1 < fb->len; i += 32) // sampel tiap 16 piksel
+    {
+        sum += rgb565_to_gray((fb->buf[i] << 8) | fb->buf[i + 1]);
+        n++;
+    }
+    return n ? sum / n : 0;
+}
+
 // Simple connected-component labeling via BFS; returns vector of areas
 #include <vector>
 struct Blob
@@ -310,6 +322,25 @@ bool initCamera()
     }
 
     Serial.println("✅ Camera initialized successfully!");
+
+    sensor_t *s = esp_camera_sensor_get();
+    if (s)
+        Serial.printf("📷 Sensor PID: 0x%04x (OV5640 = 0x5640)\n", s->id.PID);
+
+    // Buang beberapa frame awal agar auto-exposure stabil, lalu cek kecerahan
+    for (int i = 0; i < 10; i++)
+    {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb)
+        {
+            Serial.println("❌ Test frame capture failed");
+            break;
+        }
+        if (i == 9)
+            Serial.printf("🔆 Test frame %dx%d, len %u, brightness avg %d / 255\n",
+                          fb->width, fb->height, fb->len, frame_brightness(fb));
+        esp_camera_fb_return(fb);
+    }
     return true;
 }
 
@@ -527,8 +558,10 @@ static esp_err_t stream_handler(httpd_req_t *req)
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
+    Serial.println("🎥 Stream client connected");
     esp_err_t res = ESP_OK;
     char partHdr[64];
+    uint32_t frames = 0, lastLog = millis();
     while (res == ESP_OK)
     {
         camera_fb_t *fb = esp_camera_fb_get();
@@ -537,6 +570,14 @@ static esp_err_t stream_handler(httpd_req_t *req)
             Serial.println("❌ Stream: camera capture failed");
             res = ESP_FAIL;
             break;
+        }
+        frames++;
+        if (millis() - lastLog >= 3000)
+        {
+            Serial.printf("🎥 Stream %.1f fps, brightness %d / 255\n",
+                          frames * 1000.0f / (millis() - lastLog), frame_brightness(fb));
+            frames = 0;
+            lastLog = millis();
         }
 
         // Kamera memakai RGB565 (untuk penghitungan), jadi dikompres ke JPEG di sini
@@ -558,6 +599,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
             res = httpd_resp_send_chunk(req, (const char *)jpg, jpgLen);
         free(jpg);
     }
+    Serial.println("🎥 Stream client disconnected");
     return res;
 }
 
