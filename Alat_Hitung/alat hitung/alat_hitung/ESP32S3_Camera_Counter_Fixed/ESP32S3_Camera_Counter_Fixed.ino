@@ -48,6 +48,7 @@ int g_maxArea = 20000; // piksel, maksimal blob dihitung
 #define PROC_PIXELFORMAT PIXFORMAT_RGB565
 
 httpd_handle_t camera_httpd = NULL;
+httpd_handle_t stream_httpd = NULL;
 
 // Function declarations
 void startCameraServer();
@@ -200,9 +201,9 @@ const char index_html[] PROGMEM = R"rawliteral(
     </div>
     <div class="row" style="margin-top:12px">
       <div>
-        <img id="snap" src="/snapshot?ts=0">
+        <img id="snap" alt="stream">
         <div style="display:flex;gap:8px;margin-top:8px">
-          <button onclick="refresh()">Refresh</button>
+          <button onclick="startStream()">Restart Stream</button>
           <button onclick="doCount()">Count</button>
           <button onclick="save()">Save Snapshot</button>
         </div>
@@ -226,7 +227,10 @@ const char index_html[] PROGMEM = R"rawliteral(
   <footer>ESP32S3 OV5640 Object Counter • Pin mapping verified</footer>
 
 <script>
-function refresh(){ document.getElementById('snap').src = '/snapshot?ts='+Date.now(); }
+// Video real-time (MJPEG) dari server terpisah di port 81
+const snap = document.getElementById('snap');
+function startStream(){ snap.src = `http://${location.hostname}:81/stream?ts=${Date.now()}`; }
+snap.onerror = () => setTimeout(startStream, 1000); // sambung ulang otomatis jika putus
 async function doCount(){
   const th = document.getElementById('th').value;
   const minA = document.getElementById('minA').value;
@@ -249,7 +253,7 @@ async function save(){
     alert(j.message || ('Error: ' + j.error));
   } catch (e) { alert('Error: ' + e.message); }
 }
-setInterval(refresh, 4000);
+startStream();
 </script>
 </body>
 </html>
@@ -512,6 +516,51 @@ static esp_err_t save_snapshot_handler(httpd_req_t *req)
     return send_json(req, "{\"message\":\"saved as " + fn + "\"}");
 }
 
+// MJPEG stream: kirim frame JPEG terus-menerus sampai browser menutup koneksi
+#define PART_BOUNDARY "123456789000000000000987654321"
+static const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
+static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
+static const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+static esp_err_t stream_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    esp_err_t res = ESP_OK;
+    char partHdr[64];
+    while (res == ESP_OK)
+    {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb)
+        {
+            Serial.println("❌ Stream: camera capture failed");
+            res = ESP_FAIL;
+            break;
+        }
+
+        // Kamera memakai RGB565 (untuk penghitungan), jadi dikompres ke JPEG di sini
+        uint8_t *jpg = NULL;
+        size_t jpgLen = 0;
+        bool ok = frame2jpg(fb, 80, &jpg, &jpgLen);
+        esp_camera_fb_return(fb);
+        if (!ok)
+        {
+            res = ESP_FAIL;
+            break;
+        }
+
+        size_t hlen = snprintf(partHdr, sizeof(partHdr), STREAM_PART, jpgLen);
+        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+        if (res == ESP_OK)
+            res = httpd_resp_send_chunk(req, partHdr, hlen);
+        if (res == ESP_OK)
+            res = httpd_resp_send_chunk(req, (const char *)jpg, jpgLen);
+        free(jpg);
+    }
+    return res;
+}
+
 void startCameraServer()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -533,6 +582,20 @@ void startCameraServer()
     else
     {
         Serial.println("❌ Web server failed to start!");
+    }
+
+    // Server kedua khusus stream, agar /count dan /save_snapshot tidak terblokir
+    config.server_port = 81;
+    config.ctrl_port += 1;
+    httpd_uri_t stream_uri = {.uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL};
+    if (httpd_start(&stream_httpd, &config) == ESP_OK)
+    {
+        httpd_register_uri_handler(stream_httpd, &stream_uri);
+        Serial.println("✅ Stream server started on port 81");
+    }
+    else
+    {
+        Serial.println("❌ Stream server failed to start!");
     }
 }
 
