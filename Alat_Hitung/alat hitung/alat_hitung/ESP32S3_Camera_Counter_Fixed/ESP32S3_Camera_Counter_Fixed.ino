@@ -553,8 +553,37 @@ static const char *STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" P
 static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char *STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
+// frame2jpg() selalu minta buffer 128 KB -> gagal di board tanpa PSRAM.
+// frame2jpg_cb() menulis JPEG lewat callback ke buffer kecil milik kita.
+#define JPG_BUF_SIZE (32 * 1024) // JPEG 160x120 hanya ~3-8 KB
+struct JpgBuf
+{
+    uint8_t *buf;
+    size_t len;
+};
+
+static size_t jpg_buf_writer(void *arg, size_t index, const void *data, size_t len)
+{
+    JpgBuf *j = (JpgBuf *)arg;
+    if (index == 0)
+        j->len = 0;
+    if (j->len + len > JPG_BUF_SIZE)
+        return 0; // buffer penuh -> encoder dihentikan
+    memcpy(j->buf + j->len, data, len);
+    j->len += len;
+    return len;
+}
+
 static esp_err_t stream_handler(httpd_req_t *req)
 {
+    JpgBuf jb = {(uint8_t *)malloc(JPG_BUF_SIZE), 0};
+    if (!jb.buf)
+    {
+        Serial.println("❌ Stream: JPG buffer malloc failed");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
     httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
@@ -581,24 +610,23 @@ static esp_err_t stream_handler(httpd_req_t *req)
         }
 
         // Kamera memakai RGB565 (untuk penghitungan), jadi dikompres ke JPEG di sini
-        uint8_t *jpg = NULL;
-        size_t jpgLen = 0;
-        bool ok = frame2jpg(fb, 80, &jpg, &jpgLen);
+        bool ok = frame2jpg_cb(fb, 80, jpg_buf_writer, &jb);
         esp_camera_fb_return(fb);
         if (!ok)
         {
+            Serial.println("❌ Stream: JPEG encode failed");
             res = ESP_FAIL;
             break;
         }
 
-        size_t hlen = snprintf(partHdr, sizeof(partHdr), STREAM_PART, jpgLen);
+        size_t hlen = snprintf(partHdr, sizeof(partHdr), STREAM_PART, jb.len);
         res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
         if (res == ESP_OK)
             res = httpd_resp_send_chunk(req, partHdr, hlen);
         if (res == ESP_OK)
-            res = httpd_resp_send_chunk(req, (const char *)jpg, jpgLen);
-        free(jpg);
+            res = httpd_resp_send_chunk(req, (const char *)jb.buf, jb.len);
     }
+    free(jb.buf);
     Serial.println("🎥 Stream client disconnected");
     return res;
 }
