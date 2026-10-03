@@ -231,15 +231,23 @@ async function doCount(){
   const th = document.getElementById('th').value;
   const minA = document.getElementById('minA').value;
   const maxA = document.getElementById('maxA').value;
-  const res = await fetch(`/count?threshold=${th}&min=${minA}&max=${maxA}`);
-  const j = await res.json();
-  document.getElementById('count').innerText = j.count;
-  document.getElementById('sizes').innerText = j.sizes.join(', ');
+  try {
+    const res = await fetch(`/count?threshold=${th}&min=${minA}&max=${maxA}`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    document.getElementById('count').innerText = j.count;
+    document.getElementById('sizes').innerText = j.sizes.join(', ');
+  } catch (e) {
+    document.getElementById('count').innerText = 'ERR';
+    document.getElementById('sizes').innerText = 'Gagal ambil gambar: ' + e.message;
+  }
 }
 async function save(){
-  const res = await fetch('/save_snapshot');
-  const j = await res.json();
-  alert(j.message);
+  try {
+    const res = await fetch('/save_snapshot');
+    const j = await res.json();
+    alert(j.message || ('Error: ' + j.error));
+  } catch (e) { alert('Error: ' + e.message); }
 }
 setInterval(refresh, 4000);
 </script>
@@ -252,7 +260,7 @@ bool initCamera()
 {
     Serial.println("🔧 Initializing camera with verified pin mapping...");
 
-    camera_config_t config;
+    camera_config_t config = {}; // zero-init: field yang tidak di-set (fb_location, grab_mode, dll) jangan berisi sampah
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
     config.pin_d0 = Y2_GPIO_NUM;         // GPIO 11
@@ -276,7 +284,19 @@ bool initCamera()
     config.pixel_format = PROC_PIXELFORMAT; // RGB565
     config.frame_size = PROC_FRAMESIZE;     // QQVGA 160x120
     config.jpeg_quality = 12;
-    config.fb_count = 1;
+    if (psramFound())
+    {
+        // 2 buffer + GRAB_LATEST: setiap snapshot/count memakai frame terbaru, bukan frame lama
+        config.fb_location = CAMERA_FB_IN_PSRAM;
+        config.fb_count = 2;
+        config.grab_mode = CAMERA_GRAB_LATEST;
+    }
+    else
+    {
+        config.fb_location = CAMERA_FB_IN_DRAM;
+        config.fb_count = 1;
+        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    }
 
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK)
@@ -363,66 +383,24 @@ static esp_err_t snapshot_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    int w = fb->width;
-    int h = fb->height;
-    int rowSize = ((w * 3 + 3) / 4) * 4;
-    int imgSize = rowSize * h;
-    int fileSize = 54 + imgSize;
+    // frame2bmp (img_converters.h) membaca RGB565 dengan urutan byte yang benar
+    // dan menghasilkan BMP utuh dalam satu buffer -> dikirim sekali, jauh lebih cepat
+    uint8_t *bmp = NULL;
+    size_t bmpLen = 0;
+    bool ok = frame2bmp(fb, &bmp, &bmpLen);
+    esp_camera_fb_return(fb);
+    if (!ok)
+    {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
 
     httpd_resp_set_type(req, "image/bmp");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=snapshot.bmp");
-
-    // BMP header
-    uint8_t bmpHeader[54] = {0};
-    bmpHeader[0] = 'B';
-    bmpHeader[1] = 'M';
-    bmpHeader[2] = fileSize & 0xFF;
-    bmpHeader[3] = (fileSize >> 8) & 0xFF;
-    bmpHeader[4] = (fileSize >> 16) & 0xFF;
-    bmpHeader[5] = (fileSize >> 24) & 0xFF;
-    bmpHeader[10] = 54;
-    bmpHeader[14] = 40;
-    bmpHeader[18] = w & 0xFF;
-    bmpHeader[19] = (w >> 8) & 0xFF;
-    bmpHeader[20] = (w >> 16) & 0xFF;
-    bmpHeader[21] = (w >> 24) & 0xFF;
-    bmpHeader[22] = h & 0xFF;
-    bmpHeader[23] = (h >> 8) & 0xFF;
-    bmpHeader[24] = (h >> 16) & 0xFF;
-    bmpHeader[25] = (h >> 24) & 0xFF;
-    bmpHeader[26] = 1;
-    bmpHeader[28] = 24;
-
-    httpd_resp_send_chunk(req, (const char *)bmpHeader, 54);
-
-    // pixel data
-    uint8_t *rgb565 = fb->buf;
-    for (int y = h - 1; y >= 0; y--)
-    {
-        for (int x = 0; x < w; x++)
-        {
-            int idx = (y * w + x) * 2;
-            uint16_t px = rgb565[idx] | (rgb565[idx + 1] << 8);
-            uint8_t r5 = (px >> 11) & 0x1F;
-            uint8_t g6 = (px >> 5) & 0x3F;
-            uint8_t b5 = px & 0x1F;
-            uint8_t R = (r5 * 255) / 31;
-            uint8_t G = (g6 * 255) / 63;
-            uint8_t B = (b5 * 255) / 31;
-            uint8_t bgr[3] = {B, G, R};
-            httpd_resp_send_chunk(req, (const char *)bgr, 3);
-        }
-        int pad = rowSize - w * 3;
-        if (pad > 0)
-        {
-            uint8_t padding[4] = {0};
-            httpd_resp_send_chunk(req, (const char *)padding, pad);
-        }
-    }
-
-    httpd_resp_send_chunk(req, NULL, 0);
-    esp_camera_fb_return(fb);
-    return ESP_OK;
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t res = httpd_resp_send(req, (const char *)bmp, bmpLen);
+    free(bmp);
+    return res;
 }
 
 static esp_err_t count_handler(httpd_req_t *req)
@@ -438,6 +416,9 @@ static esp_err_t count_handler(httpd_req_t *req)
         if (httpd_query_key_value(query, "max", param, sizeof(param)) == ESP_OK)
             g_maxArea = atoi(param);
     }
+    g_threshold = constrain(g_threshold, 0, 255);
+    g_minArea = max(g_minArea, 1);
+    g_maxArea = max(g_maxArea, g_minArea);
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb)
@@ -463,7 +444,8 @@ static esp_err_t count_handler(httpd_req_t *req)
         {
             int i = y * w + x;
             int idx = i * 2;
-            uint16_t px = buf[idx] | (buf[idx + 1] << 8);
+            // frame buffer kamera menyimpan RGB565 big-endian (byte tinggi dulu)
+            uint16_t px = (buf[idx] << 8) | buf[idx + 1];
             gray[i] = rgb565_to_gray(px);
         }
     }
@@ -491,93 +473,43 @@ static esp_err_t count_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t send_json(httpd_req_t *req, const String &json)
+{
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, json.c_str(), json.length());
+}
+
 static esp_err_t save_snapshot_handler(httpd_req_t *req)
 {
+    // Catatan: pin SD_MMC harus sesuai board dan tidak bentrok dengan pin kamera
     if (!SD_MMC.begin())
-    {
-        const char *resp = "{\"error\":\"SD card init failed\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, resp, strlen(resp));
-        return ESP_FAIL;
-    }
+        return send_json(req, "{\"error\":\"SD card init failed\"}");
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb)
-    {
-        const char *resp = "{\"error\":\"camera capture failed\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, resp, strlen(resp));
-        return ESP_FAIL;
-    }
+        return send_json(req, "{\"error\":\"camera capture failed\"}");
 
-    int w = fb->width, h = fb->height;
+    uint8_t *bmp = NULL;
+    size_t bmpLen = 0;
+    bool ok = frame2bmp(fb, &bmp, &bmpLen);
+    esp_camera_fb_return(fb);
+    if (!ok)
+        return send_json(req, "{\"error\":\"BMP convert failed\"}");
+
     String fn = "/snapshot_" + String(millis()) + ".bmp";
     File f = SD_MMC.open(fn, FILE_WRITE);
     if (!f)
     {
-        esp_camera_fb_return(fb);
-        const char *resp = "{\"error\":\"SD open failed\"}";
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, resp, strlen(resp));
-        return ESP_FAIL;
+        free(bmp);
+        return send_json(req, "{\"error\":\"SD open failed\"}");
     }
-
-    int rowSize = ((w * 3 + 3) / 4) * 4;
-    int imgSize = rowSize * h;
-    int fileSize = 54 + imgSize;
-    uint8_t bmpHeader[54] = {0};
-    bmpHeader[0] = 'B';
-    bmpHeader[1] = 'M';
-    bmpHeader[2] = fileSize & 0xFF;
-    bmpHeader[3] = (fileSize >> 8) & 0xFF;
-    bmpHeader[4] = (fileSize >> 16) & 0xFF;
-    bmpHeader[5] = (fileSize >> 24) & 0xFF;
-    bmpHeader[10] = 54;
-    bmpHeader[14] = 40;
-    bmpHeader[18] = w & 0xFF;
-    bmpHeader[19] = (w >> 8) & 0xFF;
-    bmpHeader[20] = (w >> 16) & 0xFF;
-    bmpHeader[21] = (w >> 24) & 0xFF;
-    bmpHeader[22] = h & 0xFF;
-    bmpHeader[23] = (h >> 8) & 0xFF;
-    bmpHeader[24] = (h >> 16) & 0xFF;
-    bmpHeader[25] = (h >> 24) & 0xFF;
-    bmpHeader[26] = 1;
-    bmpHeader[28] = 24;
-    f.write(bmpHeader, 54);
-
-    uint8_t *rgb565 = fb->buf;
-    for (int y = h - 1; y >= 0; y--)
-    {
-        for (int x = 0; x < w; x++)
-        {
-            int idx = (y * w + x) * 2;
-            uint16_t px = rgb565[idx] | (rgb565[idx + 1] << 8);
-            uint8_t r5 = (px >> 11) & 0x1F;
-            uint8_t g6 = (px >> 5) & 0x3F;
-            uint8_t b5 = px & 0x1F;
-            uint8_t R = (r5 * 255) / 31;
-            uint8_t G = (g6 * 255) / 63;
-            uint8_t B = (b5 * 255) / 31;
-            f.write(&B, 1);
-            f.write(&G, 1);
-            f.write(&R, 1);
-        }
-        int pad = rowSize - w * 3;
-        for (int p = 0; p < pad; p++)
-        {
-            uint8_t z = 0;
-            f.write(&z, 1);
-        }
-    }
-
+    size_t written = f.write(bmp, bmpLen);
     f.close();
-    esp_camera_fb_return(fb);
+    free(bmp);
 
-    String resp = "{\"message\":\"saved as " + fn + "\"}";
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, resp.c_str(), resp.length());
-    return ESP_OK;
+    if (written != bmpLen)
+        return send_json(req, "{\"error\":\"SD write failed\"}");
+    return send_json(req, "{\"message\":\"saved as " + fn + "\"}");
 }
 
 void startCameraServer()
@@ -606,7 +538,8 @@ void startCameraServer()
 
 void setup()
 {
-    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // disable brownout detector
+    // Jangan tulis RTC_CNTL_BROWN_OUT_REG di ESP32-S3: layout register beda dengan ESP32 lama
+    // dan membuat chip restart terus (boot loop). Pakai catu daya 5V yang stabil.
 
     Serial.begin(115200);
     delay(2000);
@@ -617,6 +550,7 @@ void setup()
     Serial.println("======================================");
     Serial.printf("ESP32 Chip: %s\n", ESP.getChipModel());
     Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("PSRAM: %d bytes %s\n", ESP.getPsramSize(), psramFound() ? "(OK)" : "(tidak ada - frame buffer di RAM internal)");
     Serial.println();
 
     // Step 1: Setup WiFi AP
