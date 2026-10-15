@@ -3,6 +3,8 @@
 // RELAY ACTIVE LOW
 // =====================================
 
+#include <EEPROM.h>
+
 const int spkPlus  = A0;
 const int spkMinus = A1;
 
@@ -16,6 +18,17 @@ const unsigned long relayTime = 1000;
 
 unsigned long lastDetect = 0;
 
+// batas jumlah booting
+const unsigned int maxBoot = 3000;
+
+// alamat EEPROM
+const int addrMagic = 0;
+const int addrBoot  = 1;
+const byte magicValue = 0xA5;
+
+unsigned int bootCount = 0;
+bool locked = false;
+
 void setup() {
 
   pinMode(relayPin, OUTPUT);
@@ -23,10 +36,38 @@ void setup() {
   // relay OFF
   digitalWrite(relayPin, HIGH);
 
-  Serial.begin(9600);
+  Serial.begin(115200);
+
+  // EEPROM baru (belum pernah dipakai) -> mulai dari 0
+  if (EEPROM.read(addrMagic) != magicValue) {
+    EEPROM.write(addrMagic, magicValue);
+    EEPROM.put(addrBoot, (unsigned int)0);
+  }
+
+  EEPROM.get(addrBoot, bootCount);
+
+  // tambah hitungan booting (berhenti menulis setelah melewati batas)
+  if (bootCount <= maxBoot) {
+    bootCount++;
+    EEPROM.put(addrBoot, bootCount);
+  }
+
+  Serial.print("Boot ke: ");
+  Serial.println(bootCount);
+
+  if (bootCount > maxBoot) {
+    locked = true;
+    Serial.println("Batas booting terlampaui, alat tidak berfungsi");
+  }
 }
 
 void loop() {
+
+  // alat terkunci: relay tetap OFF
+  if (locked) {
+    digitalWrite(relayPin, HIGH);
+    return;
+  }
 
   int maxDiff = 0;
 
