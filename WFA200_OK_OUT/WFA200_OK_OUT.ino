@@ -8,7 +8,14 @@
 const int spkPlus  = A0;
 const int spkMinus = A1;
 
-const int relayPin = 8;
+const int relayPin  = 11;
+const int relayPin2 = 8;
+
+// LED indikator batas booting
+const int ledPin = 2;
+
+// input saklar (dipakai saat alat terkunci)
+const int switchPin = 10;
 
 // sensitivitas
 const int threshold = 700;
@@ -32,9 +39,17 @@ bool locked = false;
 void setup() {
 
   pinMode(relayPin, OUTPUT);
+  pinMode(relayPin2, OUTPUT);
+  pinMode(ledPin, OUTPUT);
 
   // relay OFF
   digitalWrite(relayPin, HIGH);
+  digitalWrite(relayPin2, HIGH);
+
+  // LED OFF
+  digitalWrite(ledPin, LOW);
+
+  pinMode(switchPin, INPUT_PULLUP);
 
   Serial.begin(115200);
 
@@ -57,15 +72,23 @@ void setup() {
 
   if (bootCount > maxBoot) {
     locked = true;
-    Serial.println("Batas booting terlampaui, alat tidak berfungsi");
+    digitalWrite(ledPin, HIGH);
+    Serial.println("Batas booting terlampaui, mode saklar pin 10 -> pin 11");
   }
 }
 
 void loop() {
 
-  // alat terkunci: relay tetap OFF
+  // alat terkunci: hanya pin 11 mengikuti pin 10
+  // pin 10 LOW -> pin 11 LOW, pin 10 HIGH -> pin 11 HIGH
   if (locked) {
-    digitalWrite(relayPin, HIGH);
+
+    if (digitalRead(switchPin) == LOW) {
+      digitalWrite(relayPin, LOW);
+    } else {
+      digitalWrite(relayPin, HIGH);
+    }
+
     return;
   }
 
@@ -92,6 +115,7 @@ void loop() {
   if (maxDiff > threshold) {
 
     digitalWrite(relayPin, LOW);
+    digitalWrite(relayPin2, LOW);
 
     lastDetect = millis();
   }
@@ -100,5 +124,6 @@ void loop() {
   if (millis() - lastDetect > relayTime) {
 
     digitalWrite(relayPin, HIGH);
+    digitalWrite(relayPin2, HIGH);
   }
 }
